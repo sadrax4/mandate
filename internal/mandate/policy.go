@@ -139,7 +139,15 @@ func (m Mandate) Amend(field string, value any) (Mandate, string, error) {
 		var removed []string
 		var keep []string
 		for _, b := range out.BlockedMerchants {
-			if MerchantBlocked(b, xs) { // the same matching the rule itself uses
+			// Remove the entry that blocks any named merchant (unblocking
+			// "us.temu.com" removes "temu.com"), with the rule's own matching.
+			blocks := false
+			for _, x := range xs {
+				if MerchantBlocked(x, []string{b}) {
+					blocks = true
+				}
+			}
+			if blocks {
 				removed = append(removed, b)
 			} else {
 				keep = append(keep, b)

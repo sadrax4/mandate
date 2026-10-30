@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -257,14 +258,14 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if !s.ips.allow("mandate", clientIP(r), 20, s.cfg.PerClientLimits) {
-		writeErr(w, 429, "too many mandates created from this address; please try again later")
-		return
-	}
 	s.mandateMu.Lock()
 	defer s.mandateMu.Unlock()
 	if s.st.CountMandates() >= MaxMandates {
 		writeErr(w, 409, fmt.Sprintf("this demo keeps at most %d mandates", MaxMandates))
+		return
+	}
+	if !s.ips.allow("mandate", clientIP(r), 20, s.cfg.PerClientLimits) {
+		writeErr(w, 429, "too many mandates created from this address; please try again later")
 		return
 	}
 	s.st.PutMandate(&in)
@@ -381,8 +382,8 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mandate not found")
 		return
 	}
-	if !s.allowRunFrom(r) {
-		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+	if msg := s.refuseRun(r); msg != "" {
+		writeErr(w, 429, msg)
 		return
 	}
 	m := &store.Mission{ID: store.NewID("msn"), MandateID: in.MandateID, Goal: in.Goal, Status: store.MissionRunning, Kind: in.Kind, CreatedAt: time.Now()}
@@ -420,25 +421,34 @@ func (s *Server) standingOrderReady(parent *store.Mission) error {
 	if parent.RepeatDays <= 0 {
 		return &httpError{409, "this mission is not a standing order"}
 	}
+	stop := func(why, msg string) error {
+		_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) { m.RepeatDays = 0; m.NextRunAt = nil })
+		s.st.AddEvent(parent.ID, "status", "standing order stopped: "+why, map[string]any{"repeat_days": 0})
+		return &httpError{409, msg}
+	}
 	md, err := s.st.GetMandate(parent.MandateID)
 	if err != nil {
-		return &httpError{404, "mandate not found"}
+		return stop("its mandate no longer exists", "the mandate no longer exists; the standing order has been stopped")
 	}
-	if md.Spent >= md.TotalBudget {
-		_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) { m.RepeatDays = 0; m.NextRunAt = nil })
-		s.st.AddEvent(parent.ID, "status", "standing order stopped: the mandate's budget is used up", map[string]any{"repeat_days": 0})
-		return &httpError{409, "the mandate's budget is used up; the standing order has been stopped"}
+	if mandate.Round(md.TotalBudget-md.Spent) <= 0 {
+		return stop("the mandate's budget is used up", "the mandate's budget is used up; the standing order has been stopped")
 	}
 	return nil
 }
 
-func (s *Server) startRun(parent *store.Mission, why string, counted bool) (*store.Mission, error) {
+// startRun is the scheduler's entry: checks, the global cap, then the run.
+func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, error) {
 	if err := s.standingOrderReady(parent); err != nil {
 		return nil, err
 	}
-	if !counted && !s.allowMissionStart() {
+	if !s.allowMissionStart() {
 		return nil, &httpError{429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)}
 	}
+	return s.launchRun(parent, why), nil
+}
+
+// launchRun starts one run of a standing order whose checks already passed.
+func (s *Server) launchRun(parent *store.Mission, why string) *store.Mission {
 	run := &store.Mission{ID: store.NewID("msn"), MandateID: parent.MandateID, Goal: parent.Goal, Status: store.MissionRunning, Kind: parent.Kind, RepeatOf: parent.ID, CreatedAt: time.Now()}
 	s.st.PutMission(run)
 	next := time.Now().Add(time.Duration(parent.RepeatDays) * 24 * time.Hour)
@@ -451,7 +461,7 @@ func (s *Server) startRun(parent *store.Mission, why string, counted bool) (*sto
 	s.st.AddEvent(parent.ID, "status", fmt.Sprintf("standing order run started (%s): mission %s; next run on %s", why, run.ID, next.UTC().Format("2006-01-02")), map[string]any{"run_mission_id": run.ID, "next_run_at": next})
 	s.st.AddEvent(run.ID, "status", "run of standing order "+parent.ID+" ("+why+"): "+parent.Goal, map[string]any{"repeat_of": parent.ID})
 	s.startAgent(run, "")
-	return run, nil
+	return run
 }
 
 // runDueRepeats starts every standing order whose next run is due.
@@ -461,7 +471,7 @@ func (s *Server) runDueRepeats(now time.Time) int {
 		if m.RepeatDays <= 0 || m.NextRunAt == nil || m.NextRunAt.After(now) {
 			continue
 		}
-		if _, err := s.startRun(m, "scheduled", false); err != nil {
+		if _, err := s.startRun(m, "scheduled"); err != nil {
 			log.Printf("standing order %s: %v", m.ID, err)
 			continue
 		}
@@ -490,29 +500,24 @@ func (s *Server) handleRunNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.standingOrderReady(m); err != nil { // refused for free, before any slot is spent
-		var he *httpError
-		if errors.As(err, &he) {
-			writeErr(w, he.code, he.msg)
-			return
-		}
-		writeErr(w, 500, err.Error())
+		writeHTTPErr(w, err)
 		return
 	}
-	if !s.allowRunFrom(r) {
-		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+	if msg := s.refuseRun(r); msg != "" {
+		writeErr(w, 429, msg)
 		return
 	}
-	run, err := s.startRun(m, "run now", true)
-	if err != nil {
-		var he *httpError
-		if errors.As(err, &he) {
-			writeErr(w, he.code, he.msg)
-			return
-		}
-		writeErr(w, 500, err.Error())
+	writeJSON(w, 201, s.launchRun(m, "run now"))
+}
+
+// writeHTTPErr writes an httpError with its own status, anything else as 500.
+func writeHTTPErr(w http.ResponseWriter, err error) {
+	var he *httpError
+	if errors.As(err, &he) {
+		writeErr(w, he.code, he.msg)
 		return
 	}
-	writeJSON(w, 201, run)
+	writeErr(w, 500, err.Error())
 }
 
 func (s *Server) handleStopRepeat(w http.ResponseWriter, r *http.Request) {
@@ -530,18 +535,29 @@ func (s *Server) handleStopRepeat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, m)
 }
 
-// allowRunFrom is allowMissionStart plus a per-client share of the cap, so
-// one address cannot use up every judge's hour. A refusal costs the client
-// nothing: the global window is checked before the client's slot is taken.
-func (s *Server) allowRunFrom(r *http.Request) bool {
-	if s.cfg.MaxMissionsPerHour > 0 && !s.ips.room("run", "*", s.cfg.MaxMissionsPerHour) {
-		return false
+// refuseRun applies the global hourly run cap and, on a public demo, one
+// address's share of it, in one step: both slots are taken together or not
+// at all, so a refusal costs the client nothing. It returns the reason, or
+// "" when the run may start. With no global cap, runs are unlimited.
+func (s *Server) refuseRun(r *http.Request) string {
+	if s.cfg.MaxMissionsPerHour <= 0 {
+		return ""
 	}
-	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.PerClientLimits) {
-		return false
+	client := ""
+	if s.cfg.PerClientLimits {
+		client = clientIP(r)
 	}
-	return s.allowMissionStart()
+	switch s.ips.allowBoth("run", s.cfg.MaxMissionsPerHour, client, runsPerClient(s.cfg.MaxMissionsPerHour)) {
+	case refusedGlobal:
+		return fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)
+	case refusedClient:
+		return "too many agent runs from this address this hour; please try again later"
+	}
+	return ""
 }
+
+// allowRunFrom is refuseRun as a boolean.
+func (s *Server) allowRunFrom(r *http.Request) bool { return s.refuseRun(r) == "" }
 
 // runsPerClient is one address's share of the hourly run cap: three quarters
 // of it, so a room of judges behind one address is not starved, and never
@@ -554,7 +570,7 @@ func runsPerClient(capPerHour int) int {
 }
 
 // allowMissionStart enforces the global per-hour cap on agent runs (missions
-// and rejections both start a run).
+// and rejections both start a run); the scheduler uses it directly.
 func (s *Server) allowMissionStart() bool {
 	return s.ips.allow("run", "*", s.cfg.MaxMissionsPerHour, s.cfg.MaxMissionsPerHour > 0)
 }
@@ -588,9 +604,9 @@ func (s *Server) handleApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "cannot apply: "+err.Error())
 		return
 	}
-	if !s.allowRunFrom(r) {
+	if msg := s.refuseRun(r); msg != "" {
 		s.payMu.Unlock()
-		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+		writeErr(w, 429, msg)
 		return
 	}
 	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error {
@@ -641,13 +657,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "streaming unsupported")
 		return
 	}
-	if s.cfg.PerClientLimits && !s.openStream(clientIP(r)) {
+	streamKey := "*"
+	if s.cfg.PerClientLimits {
+		streamKey = clientIP(r)
+	}
+	if !s.openStream(streamKey) {
 		writeErr(w, 503, "too many open event streams; close some tabs and retry")
 		return
 	}
-	if s.cfg.PerClientLimits {
-		defer s.closeStream(clientIP(r))
-	}
+	defer s.closeStream(streamKey)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1106,9 +1124,9 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 	// The rate limit is checked before anything changes, so a refusal leaves
 	// the proposal exactly as it was.
-	if !s.allowRunFrom(r) {
+	if msg := s.refuseRun(r); msg != "" {
 		s.payMu.Unlock()
-		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+		writeErr(w, 429, msg)
 		return
 	}
 	if orderID != "" {
@@ -1695,19 +1713,45 @@ type ipWindows struct {
 	sweeps int
 }
 
-// prune drops the timestamps older than an hour for one key and, now and
-// then, every key whose window is empty, so a flood of addresses cannot grow
-// memory without end and nobody's counter is ever reset early. Call with
-// the lock held.
+// windowKey names one counter; addresses are cut to a sane length.
+func windowKey(kind, ip string) string {
+	if len(ip) > 64 {
+		ip = ip[:64]
+	}
+	return kind + ":" + ip
+}
+
+// maxWindowKeys bounds the memory a flood of distinct addresses can take.
+const maxWindowKeys = 50000
+
+// prune drops the timestamps older than an hour for one key. Every
+// thousand calls it also drops the keys whose window is empty, and when the
+// map is still over its bound it drops the keys least recently hit, so
+// memory stays bounded and nobody active is ever reset early. Call with the
+// lock held.
 func (w *ipWindows) prune(key string) []time.Time {
 	if w.hits == nil {
 		w.hits = map[string][]time.Time{}
 	}
 	cutoff := time.Now().Add(-time.Hour)
-	if w.sweeps++; w.sweeps%1000 == 0 || len(w.hits) > 50000 {
+	if w.sweeps++; w.sweeps%1000 == 0 {
 		for k, ts := range w.hits {
 			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
 				delete(w.hits, k)
+			}
+		}
+		if len(w.hits) > maxWindowKeys {
+			type last struct {
+				k string
+				t time.Time
+			}
+			all := make([]last, 0, len(w.hits))
+			for k, ts := range w.hits {
+				all = append(all, last{k, ts[len(ts)-1]})
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].t.Before(all[j].t) })
+			for _, e := range all[:len(all)-maxWindowKeys/2] {
+				delete(w.hits, e.k)
 			}
 		}
 	}
@@ -1725,7 +1769,7 @@ func (w *ipWindows) prune(key string) []time.Time {
 func (w *ipWindows) room(kind, ip string, limit int) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return len(w.prune(kind+":"+ip)) < limit
+	return len(w.prune(windowKey(kind, ip))) < limit
 }
 
 // allow records one event for key kind:ip and reports whether it stays
@@ -1734,18 +1778,46 @@ func (w *ipWindows) allow(kind, ip string, limit int, enabled bool) bool {
 	if !enabled || ip == "" {
 		return true
 	}
-	if len(ip) > 64 {
-		ip = ip[:64]
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	key := kind + ":" + ip
+	key := windowKey(kind, ip)
 	kept := w.prune(key)
 	if len(kept) >= limit {
 		return false
 	}
 	w.hits[key] = append(kept, time.Now())
 	return true
+}
+
+type windowVerdict int
+
+const (
+	allowed windowVerdict = iota
+	refusedGlobal
+	refusedClient
+)
+
+// allowBoth takes the shared ("*") slot and one client's slot together,
+// under one lock: either both are recorded or neither, so a refusal never
+// costs the client anything. An empty client skips the client's share.
+func (w *ipWindows) allowBoth(kind string, globalLimit int, client string, clientLimit int) windowVerdict {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	gk := windowKey(kind, "*")
+	g := w.prune(gk)
+	if len(g) >= globalLimit {
+		return refusedGlobal
+	}
+	if client != "" {
+		ck := windowKey(kind, client)
+		c := w.prune(ck)
+		if len(c) >= clientLimit {
+			return refusedClient
+		}
+		w.hits[ck] = append(c, time.Now())
+	}
+	w.hits[gk] = append(g, time.Now())
+	return allowed
 }
 
 // clientIP is the address a request came from. Behind the compose profile's
@@ -1774,10 +1846,12 @@ const (
 	maxStreamsPerIP = 40
 )
 
+// openStream admits one more event stream: the server-wide cap always
+// applies; the per-address cap when the key is an address (not "*").
 func (s *Server) openStream(ip string) bool {
 	s.streamsMu.Lock()
 	defer s.streamsMu.Unlock()
-	if s.streamsAll >= maxStreams || s.streams[ip] >= maxStreamsPerIP {
+	if s.streamsAll >= maxStreams || (ip != "*" && s.streams[ip] >= maxStreamsPerIP) {
 		return false
 	}
 	s.streamsAll++

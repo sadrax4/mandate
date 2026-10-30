@@ -2018,17 +2018,62 @@ func TestPerClientLimitsOnThePublicDemo(t *testing.T) {
 	if got := clientIP(&http.Request{RemoteAddr: "198.51.100.7:4000", Header: http.Header{"X-Forwarded-For": {"1.2.3.4"}}}); got != "198.51.100.7" {
 		t.Fatalf("a public peer's header must be ignored: %q", got)
 	}
-	// a refused run costs the client nothing: the global cap is checked first
-	srv.cfg.MaxMissionsPerHour = 0
-	srv.cfg.MaxMissionsPerHour = 1
-	_ = srv.allowMissionStart() // the one global slot is gone
-	for i := 0; i < 3; i++ {
-		if srv.allowRunFrom(&http.Request{RemoteAddr: "203.0.113.50:1"}) {
-			t.Fatal("global cap must refuse")
+	// one address gets three quarters of the cap (30 of 40); the global cap keeps the rest
+	for i := 0; i < 30; i++ {
+		if !srv.allowRunFrom(&http.Request{RemoteAddr: "203.0.113.50:1"}) {
+			t.Fatalf("run %d from one address refused early", i)
 		}
 	}
-	if !srv.ips.room("run", "203.0.113.50", 1) {
+	if srv.allowRunFrom(&http.Request{RemoteAddr: "203.0.113.50:1"}) {
+		t.Fatal("the 31st run from one address must be refused")
+	}
+	if !srv.ips.room("run", "*", 40) || !srv.allowRunFrom(&http.Request{RemoteAddr: "203.0.113.51:1"}) {
+		t.Fatal("another address must still be able to run")
+	}
+	// a refused run costs the client nothing: both slots move together
+	srv2 := New(Config{StaticDir: "/nonexistent", MaxMissionsPerHour: 1, PerClientLimits: true}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
+	t.Cleanup(srv2.Close)
+	_ = srv2.allowMissionStart() // the one global slot is gone
+	for i := 0; i < 3; i++ {
+		if msg := srv2.refuseRun(&http.Request{RemoteAddr: "203.0.113.60:1"}); !strings.Contains(msg, "allows 1 agent runs") {
+			t.Fatalf("global cap must refuse with its own message, got %q", msg)
+		}
+	}
+	if !srv2.ips.room("run", "203.0.113.60", 1) {
 		t.Fatal("a globally refused run must not spend the client's own slot")
+	}
+	// with no global cap, runs are unlimited whatever the per-client switch says
+	srv3 := New(Config{StaticDir: "/nonexistent", MaxMissionsPerHour: 0, PerClientLimits: true}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
+	t.Cleanup(srv3.Close)
+	for i := 0; i < 15; i++ {
+		if msg := srv3.refuseRun(&http.Request{RemoteAddr: "203.0.113.70:1"}); msg != "" {
+			t.Fatalf("unlimited means unlimited, got %q", msg)
+		}
+	}
+}
+
+func TestRunNowRefusesForFree(t *testing.T) {
+	st, _ := store.Open("")
+	t.Cleanup(st.Close)
+	cat := catalog.NewMock()
+	ts := httptest.NewServer(nil)
+	srv := New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", MaxMissionsPerHour: 40, PerClientLimits: true}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
+	ts.Config.Handler = srv.Handler()
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	e := &env{t: t, ts: ts, st: st, cli: &http.Client{}}
+	var md, ms map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress coffee maker"}, &ms)
+	e.waitMission(ms["id"].(string), store.MissionAwaitingApproval)
+	var out map[string]any
+	for i := 0; i < 5; i++ {
+		if code := e.post("/api/missions/"+ms["id"].(string)+"/run-now", nil, &out); code != 409 {
+			t.Fatalf("run-now on a one-off mission: %d %v", code, out)
+		}
+	}
+	if !srv.ips.room("run", "127.0.0.1", 2) { // one run so far: the mission itself
+		t.Fatal("refused run-now attempts must not spend the client's slots")
 	}
 }
 

@@ -18,6 +18,7 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin "$SVC_USER"
 fi
 mkdir -p "$DIR/data"
+DIR=$(readlink -f "$DIR")
 cd "$DIR"
 echo "Downloading $URL"
 curl -fsSL -o mandate.tar.gz "$URL"

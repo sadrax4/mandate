@@ -64,7 +64,8 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `PAYPAL_MODE` | `sandbox` if a client ID is set, else `mock` | `sandbox`, `live` or `mock` (built-in checkout simulator) |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | | REST app credentials |
 | `LLM_PROVIDER` | `anthropic` if a key is set, else `fake` | `anthropic` or `fake` (scripted agent for tests and demos) |
-| `ANTHROPIC_API_KEY` | | Claude API key |
+| `ANTHROPIC_API_KEY` | | Claude API key from the Anthropic Console |
+| `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | | Optional: an Anthropic-compatible gateway and bearer token, e.g. `https://openrouter.ai/api` with an OpenRouter key and `ANTHROPIC_MODEL=anthropic/claude-opus-5.5`. Anthropic-only extras (refusal fallback, effort) are skipped automatically |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Any current Claude model ID |
 | `ANTHROPIC_EFFORT` | `high` | `low`…`max`, controls reasoning depth |
 | `CATALOG` | `channel3` if a key is set, else `mock` | `mock` or `channel3` |

@@ -52,18 +52,31 @@ func main() {
 		log.Fatalf("unknown CATALOG %q (mock|channel3)", os.Getenv("CATALOG"))
 	}
 
-	// LLM provider.
+	// LLM provider. Either an Anthropic Console key (ANTHROPIC_API_KEY) or a
+	// bearer token against an Anthropic-compatible gateway such as OpenRouter
+	// (ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL=https://openrouter.ai/api).
+	anthropicOpts := agent.AnthropicOptions{
+		APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+		AuthToken: os.Getenv("ANTHROPIC_AUTH_TOKEN"),
+		BaseURL:   os.Getenv("ANTHROPIC_BASE_URL"),
+		Model:     os.Getenv("ANTHROPIC_MODEL"),
+		Effort:    os.Getenv("ANTHROPIC_EFFORT"),
+	}
+	hasKey := anthropicOpts.APIKey != "" || anthropicOpts.AuthToken != ""
 	var provider agent.Provider
 	switch strings.ToLower(env("LLM_PROVIDER", "")) {
 	case "anthropic":
-		provider = agent.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("ANTHROPIC_MODEL"), os.Getenv("ANTHROPIC_EFFORT"))
+		if !hasKey {
+			log.Fatalf("LLM_PROVIDER=anthropic but neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN is set")
+		}
+		provider = agent.NewAnthropic(anthropicOpts)
 	case "fake":
 		provider = agent.Fake{}
 	case "":
-		if os.Getenv("ANTHROPIC_API_KEY") != "" {
-			provider = agent.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("ANTHROPIC_MODEL"), os.Getenv("ANTHROPIC_EFFORT"))
+		if hasKey {
+			provider = agent.NewAnthropic(anthropicOpts)
 		} else {
-			log.Println("ANTHROPIC_API_KEY not set: using the scripted offline agent (LLM_PROVIDER=fake)")
+			log.Println("no Anthropic key set: using the scripted offline agent (LLM_PROVIDER=fake)")
 			provider = agent.Fake{}
 		}
 	default:

@@ -19,25 +19,57 @@ type Anthropic struct {
 	Model    string
 	Effort   string // low | medium | high | xhigh | max
 	MaxTurns int
+	// Compat is set when requests go through a gateway that speaks the
+	// Anthropic Messages format but not every Anthropic-only extension (for
+	// example OpenRouter's Anthropic-compatible endpoint). In that mode the
+	// beta refusal-fallback and effort parameters are left out.
+	Compat  bool
+	Gateway string
 }
 
-// NewAnthropic builds a provider. An empty model defaults to Claude Opus 5.5.
-func NewAnthropic(apiKey, model, effort string) *Anthropic {
-	if model == "" {
-		model = "claude-opus-5-5"
+// AnthropicOptions configures NewAnthropic.
+type AnthropicOptions struct {
+	APIKey    string // x-api-key auth (Anthropic Console key)
+	AuthToken string // bearer auth (e.g. an OpenRouter key against its Anthropic-compatible endpoint)
+	BaseURL   string // empty = https://api.anthropic.com
+	Model     string // empty = claude-opus-5-5
+	Effort    string // empty = high
+}
+
+// NewAnthropic builds a provider.
+func NewAnthropic(o AnthropicOptions) *Anthropic {
+	if o.Model == "" {
+		o.Model = "claude-opus-5-5"
 	}
-	if effort == "" {
-		effort = "high"
+	if o.Effort == "" {
+		o.Effort = "high"
 	}
 	opts := []option.RequestOption{option.WithRequestTimeout(5 * time.Minute)}
-	if apiKey != "" {
-		opts = append(opts, option.WithAPIKey(apiKey))
+	if o.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(o.APIKey))
 	}
-	return &Anthropic{client: anthropic.NewClient(opts...), Model: model, Effort: effort, MaxTurns: 24}
+	if o.AuthToken != "" {
+		opts = append(opts, option.WithAuthToken(o.AuthToken))
+	}
+	a := &Anthropic{Model: o.Model, Effort: o.Effort, MaxTurns: 24}
+	if o.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(strings.TrimRight(o.BaseURL, "/")+"/"))
+		if !strings.Contains(o.BaseURL, "api.anthropic.com") {
+			a.Compat = true
+			a.Gateway = o.BaseURL
+		}
+	}
+	a.client = anthropic.NewClient(opts...)
+	return a
 }
 
 // Name implements Provider.
-func (a *Anthropic) Name() string { return "anthropic:" + a.Model }
+func (a *Anthropic) Name() string {
+	if a.Compat {
+		return "anthropic:" + a.Model + " via gateway"
+	}
+	return "anthropic:" + a.Model
+}
 
 // NewSession implements Provider.
 func (a *Anthropic) NewSession(system string) Session {
@@ -70,13 +102,15 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 			System:    []anthropic.BetaTextBlockParam{{Text: s.system, CacheControl: anthropic.NewBetaCacheControlEphemeralParam()}},
 			Messages:  s.history,
 			Tools:     betaTools,
+		}
+		if !s.a.Compat {
 			// Server-side refusal fallback: if a safety classifier declines, the
 			// request is re-served by Anthropic's default fallback model.
-			Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
-			Fallbacks: anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()},
-		}
-		if s.a.Effort != "" {
-			params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(s.a.Effort)}
+			params.Betas = []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01}
+			params.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
+			if s.a.Effort != "" {
+				params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(s.a.Effort)}
+			}
 		}
 		resp, err := s.a.client.Beta.Messages.New(ctx, params)
 		if err != nil {

@@ -21,7 +21,10 @@ chmod +x mandate
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo "Created $DIR/.env from the example. Edit it, then: systemctl restart mandate"
+  echo
+  echo "Created $DIR/.env from the example. Put your keys in it (nano $DIR/.env), then: systemctl restart mandate"
+  echo "Without keys the app runs in offline demo mode."
+  sed -i 's/^PAYPAL_MODE=.*/PAYPAL_MODE=mock/; s/^LLM_PROVIDER=.*/LLM_PROVIDER=fake/; s/^CATALOG=.*/CATALOG=mock/' .env
 fi
 if ! grep -q '^PUBLIC_URL=' .env || grep -q '^PUBLIC_URL=http://localhost' .env; then
   IP=$(curl -fsSL https://api.ipify.org || hostname -I | awk '{print $1}')
@@ -38,7 +41,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=$DIR
-EnvironmentFile=$DIR/.env
+# .env is read by the binary itself (it tolerates comments and quotes)
 ExecStart=$DIR/mandate
 Restart=always
 RestartSec=3

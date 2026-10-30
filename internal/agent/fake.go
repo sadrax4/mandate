@@ -181,7 +181,7 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 	outcome := "now waits for your approval"
 	switch pr.Status {
 	case "auto_approved":
-		outcome = "is under the auto-approve threshold, so it goes straight to PayPal checkout"
+		outcome = "is under the auto-approve threshold, but the payment could not be started automatically, so it waits for your go-ahead on the mission page"
 	case "approved":
 		outcome = "is approved; PayPal checkout is next"
 	case "paid":

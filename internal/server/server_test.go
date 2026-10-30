@@ -212,9 +212,12 @@ func TestFullFlowApproveAndPay(t *testing.T) {
 	if len(ledger) != 1 || ledger[0]["mandate_name"] != "Desk refresh" || ledger[0]["goal"] == "" {
 		t.Fatalf("ledger = %v", ledger)
 	}
-	// a paid proposal cannot be approved again
-	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 409 {
-		t.Fatalf("re-approve paid: %d", code)
+	// approving a paid proposal again is harmless: the same order comes back, nothing is charged twice
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 200 || ap["payment"].(map[string]any)["id"] != ledger[0]["id"] {
+		t.Fatalf("re-approve paid: %d %v", code, ap)
+	}
+	if e.get("/api/ledger", &ledger); len(ledger) != 1 {
+		t.Fatalf("re-approval created an order: %v", ledger)
 	}
 }
 
@@ -676,9 +679,8 @@ func TestConcurrentApprovalsReserveOnce(t *testing.T) {
 }
 
 // payThroughMockCheckout plays the buyer: approve on the simulator page and
-// follow the redirect back to /paypal/return.
-// payThroughMockCheckout approves the order on the mock checkout page and
-// follows the return redirect; it returns where the app sent the buyer.
+// follow the redirect back to /paypal/return. It returns where the app sent
+// the buyer next.
 func (e *env) payThroughMockCheckout(approveURL string) string {
 	e.t.Helper()
 	token := approveURL[strings.LastIndex(approveURL, "=")+1:]
@@ -759,9 +761,12 @@ func TestSavedPayPalPaysApprovedCartsWithoutCheckout(t *testing.T) {
 	if e.mandateVault(mdID) != vault {
 		t.Fatal("vault id changed")
 	}
-	// approving the paid proposal again is refused
-	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 409 {
+	// approving the paid proposal again returns the same order and charges nothing
+	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 200 {
 		t.Fatalf("re-approve: %d", code)
+	}
+	if spent, _ := e.mandateNumbers(mdID); spent != 79.9 {
+		t.Fatalf("re-approval charged again: spent %v", spent)
 	}
 	var ledger []map[string]any
 	e.get("/api/ledger", &ledger)
@@ -1674,10 +1679,8 @@ func TestReturnAfterTheWebhookCapturedFirst(t *testing.T) {
 	_, _ = e.pp.Approve(orderID, true)
 	e.webhook(`{"id":"WH-appr","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"APPROVED"}}`)
 	e.waitMission(msID, store.MissionPaid)
-	// the webhook is what booked it; now the browser arrives
-	_, _ = e.st.UpdatePayment(orderID, func(x *store.Payment) { x.Status = "APPROVED"; x.Accounted = false; x.CaptureID = "" })
-	_, _ = e.st.UpdateMission(msID, func(m *store.Mission) { m.Status = store.MissionAwaitingPayment })
-	_ = e.st.UpdateMandate(mdID, func(m *mandate.Mandate) error { m.Spent = 0; return nil })
+	spent, reserved := e.mandateNumbers(mdID)
+	// the webhook is what booked it; now the buyer's browser arrives
 	r, err := e.cli.Get(e.ts.URL + "/paypal/return?token=" + orderID)
 	if err != nil {
 		t.Fatal(err)
@@ -1687,8 +1690,94 @@ func TestReturnAfterTheWebhookCapturedFirst(t *testing.T) {
 		t.Fatalf("return after a webhook capture must report completed, got %s", loc)
 	}
 	pay, _ := e.st.GetPayment(orderID)
-	if !pay.Accounted || pay.Status != store.PaymentCompleted {
-		t.Fatalf("not reconciled: %+v", pay)
+	spent2, reserved2 := e.mandateNumbers(mdID)
+	if !pay.Accounted || pay.Status != store.PaymentCompleted || spent2 != spent || reserved2 != reserved || reserved != 0 {
+		t.Fatalf("second arrival changed the books: %+v spent %v->%v reserved %v->%v", pay, spent, spent2, reserved, reserved2)
+	}
+	ev := e.missionEvents(msID)
+	if strings.Count(ev, "payment captured") != 1 {
+		t.Fatalf("the capture must be logged exactly once:\n%s", ev)
+	}
+}
+
+// missionEvents returns the mission's activity log as text (tests).
+func (e *env) missionEvents(msID string) string {
+	e.t.Helper()
+	var detail map[string]any
+	e.get("/api/missions/"+msID, &detail)
+	var b strings.Builder
+	for _, ev := range detail["events"].([]any) {
+		m := ev.(map[string]any)
+		fmt.Fprintf(&b, "%s: %s\n", m["type"], m["message"])
+	}
+	return b.String()
+}
+
+func TestDoubleApprovalOnAOneClickMandateReturnsTheSameOrder(t *testing.T) {
+	e := newEnv(t)
+	e.pp.VaultCompletesOnCreate = true
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+
+	_, pid2 := e.pendingProposal(mdID)
+	codes := make(chan int, 2)
+	orders := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			var out map[string]any
+			codes <- e.post("/api/proposals/"+pid2+"/approve", nil, &out)
+			if p, ok := out["payment"].(map[string]any); ok {
+				orders <- p["id"].(string)
+			} else {
+				orders <- ""
+			}
+		}()
+	}
+	a, b := <-codes, <-codes
+	oa, ob := <-orders, <-orders
+	if a != 200 || b != 200 || oa == "" || oa != ob {
+		t.Fatalf("double click on a one-click mandate: codes %d/%d orders %q/%q", a, b, oa, ob)
+	}
+	spent, _ := e.mandateNumbers(mdID)
+	if spent != 79.9 {
+		t.Fatalf("spent %v, want two carts", spent)
+	}
+}
+
+func TestCancelLinkOnAPendingCaptureTellsTheTruth(t *testing.T) {
+	e := newEnv(t)
+	_, msID, orderID := e.startAutoApproved()
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.pp.NextCaptureStatus = "PENDING"
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	r, err := e.cli.Get(e.ts.URL + "/paypal/cancel?token=" + orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=pending") {
+		t.Fatalf("a stale cancel link must not claim the order was cancelled, got %s", loc)
+	}
+}
+
+func TestReturnAfterADeclineShowsTheDeniedBanner(t *testing.T) {
+	e := newEnv(t)
+	_, _, orderID := e.startAutoApproved()
+	e.srv.markRefunded(orderID, store.PaymentDenied, 0, "") // the DENIED webhook came first
+	r, err := e.cli.Get(e.ts.URL + "/paypal/return?token=" + orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=denied") {
+		t.Fatalf("got %s", loc)
 	}
 }
 

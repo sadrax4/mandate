@@ -151,7 +151,10 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 		return nil, &APIError{Status: 404, Body: `{"name":"RESOURCE_NOT_FOUND"}`}
 	}
 	if o.CaptureID != "" {
-		return nil, &APIError{Status: 422, Body: `{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"ORDER_ALREADY_CAPTURED"}]}`}
+		// PayPal answers ORDER_ALREADY_CAPTURED; REST.CaptureOrder turns that
+		// into a re-read of the order, so the simulator does the same.
+		out := o.Order
+		return &out, nil
 	}
 	if !o.Approved {
 		return nil, &APIError{Status: 422, Body: `{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"ORDER_NOT_APPROVED"}]}`}

@@ -36,6 +36,7 @@ type Query struct {
 	MaxPrice float64 `json:"max_price,omitempty"`
 	Category string  `json:"category,omitempty"`
 	Limit    int     `json:"limit,omitempty"`
+	Currency string  `json:"currency,omitempty"` // ISO 4217; catalogs that price per locale use it
 }
 
 // Searcher is implemented by every catalog backend.

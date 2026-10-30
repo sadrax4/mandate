@@ -7,57 +7,154 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // Channel3 searches real products through the Channel3 product search API
-// (https://docs.trychannel3.com). Authentication is an API key sent in the
-// x-api-key header; the free tier includes 1,000 searches per month.
+// (https://docs.trychannel3.com, OpenAPI at https://api.trychannel3.com/openapi.json).
+// Authentication is an API key in the x-api-key header; the free tier includes
+// 1,000 searches per month. Every search costs one credit.
 //
-// The decoder is deliberately tolerant: Channel3's schema is read from the
-// OpenAPI document at https://api.trychannel3.com/openapi.json and the field
-// names below cover the documented shapes plus common aliases.
+// Channel3 products carry one or more merchant offers. Mandate's cart needs a
+// single merchant and price per item, so each product is normalised to its
+// cheapest in-stock offer; the number of alternative offers is kept in the
+// attributes so the agent can mention them.
 type Channel3 struct {
 	APIKey  string
 	BaseURL string
 	HTTP    *http.Client
+	Country string // ISO 3166-1 alpha-2, default US
 }
 
 // NewChannel3 builds a client. baseURL may be empty to use the public API.
 func NewChannel3(apiKey, baseURL string) *Channel3 {
 	if baseURL == "" {
-		baseURL = "https://api.trychannel3.com/v1"
+		baseURL = "https://api.trychannel3.com"
 	}
-	return &Channel3{APIKey: apiKey, BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 20 * time.Second}}
+	return &Channel3{APIKey: apiKey, BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 25 * time.Second}, Country: "US"}
 }
 
 // Name implements Searcher.
 func (c *Channel3) Name() string { return "channel3" }
 
-// Search implements Searcher.
+// --- wire types (subset of the Channel3 OpenAPI schema) ---
+
+type c3SearchRequest struct {
+	Query   string           `json:"query"`
+	Limit   int              `json:"limit,omitempty"`
+	Filters *c3SearchFilters `json:"filters,omitempty"`
+	Config  *c3SearchConfig  `json:"config,omitempty"`
+}
+
+type c3SearchFilters struct {
+	Price        *c3PriceFilter `json:"price,omitempty"`
+	Availability []string       `json:"availability,omitempty"`
+	Conditions   []string       `json:"conditions,omitempty"`
+}
+
+type c3PriceFilter struct {
+	MinPrice *float64 `json:"min_price,omitempty"`
+	MaxPrice *float64 `json:"max_price,omitempty"`
+}
+
+type c3SearchConfig struct {
+	Country  string `json:"country,omitempty"`
+	Currency string `json:"currency,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+}
+
+type c3SearchResponse struct {
+	Products      []c3Product `json:"products"`
+	NextPageToken *string     `json:"next_page_token"`
+}
+
+type c3Product struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description *string  `json:"description"`
+	Brands      []c3Name `json:"brands"`
+	Images      []struct {
+		URL         string  `json:"url"`
+		CleanedURL  *string `json:"cleaned_url"`
+		IsMainImage bool    `json:"is_main_image"`
+	} `json:"images"`
+	Category *struct {
+		Slug  string   `json:"slug"`
+		Title string   `json:"title"`
+		Path  []c3Name `json:"path"`
+	} `json:"category"`
+	Materials           []string            `json:"materials"`
+	KeyFeatures         []string            `json:"key_features"`
+	Offers              []c3Offer           `json:"offers"`
+	StructuredAttribute map[string][]string `json:"structured_attributes"`
+	Ratings             *struct {
+		Value float64 `json:"value"`
+		Count int     `json:"count"`
+	} `json:"ratings"`
+}
+
+type c3Name struct {
+	ID    string `json:"id,omitempty"`
+	Slug  string `json:"slug,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+type c3Offer struct {
+	URL    string `json:"url"`
+	Domain string `json:"domain"`
+	Price  struct {
+		Price          float64  `json:"price"`
+		CompareAtPrice *float64 `json:"compare_at_price"`
+		Currency       string   `json:"currency"`
+	} `json:"price"`
+	Availability string  `json:"availability"`
+	Condition    *string `json:"condition"`
+}
+
+// Search implements Searcher using POST /v1/search.
 func (c *Channel3) Search(ctx context.Context, q Query) ([]Product, error) {
 	limit := q.Limit
-	if limit <= 0 || limit > 25 {
+	if limit <= 0 {
 		limit = 10
 	}
-	body := map[string]any{"query": q.Text, "limit": limit}
-	if q.MaxPrice > 0 {
-		body["filters"] = map[string]any{"price": map[string]any{"max_price": q.MaxPrice}}
+	if limit > 30 {
+		limit = 30
 	}
-	raw, err := c.do(ctx, http.MethodPost, "/search", body)
+	cur := strings.ToUpper(q.Currency)
+	if cur == "" {
+		cur = "USD"
+	}
+	req := c3SearchRequest{
+		Query:   q.Text,
+		Limit:   limit,
+		Filters: &c3SearchFilters{Availability: []string{"InStock"}, Conditions: []string{"new"}},
+		Config:  &c3SearchConfig{Country: c.Country, Currency: cur, Mode: "default"},
+	}
+	if q.MaxPrice > 0 {
+		mp := q.MaxPrice
+		req.Filters.Price = &c3PriceFilter{MaxPrice: &mp}
+	}
+	raw, err := c.do(ctx, http.MethodPost, "/v1/search", req)
 	if err != nil {
 		return nil, err
 	}
-	items := extractArray(raw, "products", "results", "items", "data")
-	out := make([]Product, 0, len(items))
-	for _, it := range items {
-		p := decodeProduct(it)
-		if p.ID == "" || p.Title == "" {
+	var resp c3SearchResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("channel3: decode search: %w", err)
+	}
+	out := make([]Product, 0, len(resp.Products))
+	for _, cp := range resp.Products {
+		p, ok := c.normalise(cp, cur)
+		if !ok {
 			continue
 		}
 		if q.MaxPrice > 0 && p.Price > q.MaxPrice {
+			continue
+		}
+		if q.Category != "" && p.Category != NormaliseCategory(q.Category) {
 			continue
 		}
 		out = append(out, p)
@@ -65,24 +162,118 @@ func (c *Channel3) Search(ctx context.Context, q Query) ([]Product, error) {
 	return out, nil
 }
 
-// Get implements Searcher.
+// Get implements Searcher using GET /v1/products/{id}.
 func (c *Channel3) Get(ctx context.Context, id string) (*Product, error) {
-	raw, err := c.do(ctx, http.MethodGet, "/products/"+id, nil)
+	path := "/v1/products/" + url.PathEscape(id) + "?country=" + url.QueryEscape(c.Country)
+	raw, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	var cp c3Product
+	if err := json.Unmarshal(raw, &cp); err != nil {
 		return nil, fmt.Errorf("channel3: decode product: %w", err)
 	}
-	if inner, ok := m["product"].(map[string]any); ok {
-		m = inner
-	}
-	p := decodeProduct(m)
-	if p.ID == "" {
+	p, ok := c.normalise(cp, "")
+	if !ok {
 		return nil, ErrNotFound
 	}
 	return &p, nil
+}
+
+// normalise converts a Channel3 product into Mandate's Product using its
+// cheapest in-stock offer. Products without a usable offer are skipped.
+func (c *Channel3) normalise(cp c3Product, wantCurrency string) (Product, bool) {
+	if cp.ID == "" || cp.Title == "" {
+		return Product{}, false
+	}
+	var best *c3Offer
+	inStock := 0
+	for i := range cp.Offers {
+		o := &cp.Offers[i]
+		if o.Price.Price <= 0 {
+			continue
+		}
+		if wantCurrency != "" && o.Price.Currency != "" && !strings.EqualFold(o.Price.Currency, wantCurrency) {
+			continue
+		}
+		if o.Availability != "" && o.Availability != "InStock" {
+			continue
+		}
+		inStock++
+		if best == nil || o.Price.Price < best.Price.Price {
+			best = o
+		}
+	}
+	if best == nil {
+		return Product{}, false
+	}
+	p := Product{ID: cp.ID, Title: cp.Title, Source: "channel3", Attributes: map[string]string{}}
+	p.Price = best.Price.Price
+	p.Currency = strings.ToUpper(best.Price.Currency)
+	if p.Currency == "" {
+		p.Currency = "USD"
+	}
+	p.Merchant = best.Domain
+	if p.Merchant == "" {
+		p.Merchant = "unknown"
+	}
+	p.URL = best.URL
+	if len(cp.Brands) > 0 {
+		p.Brand = cp.Brands[0].Name
+	}
+	if cp.Description != nil {
+		p.Description = truncate(*cp.Description, 400)
+	}
+	for _, img := range cp.Images {
+		if img.IsMainImage || p.ImageURL == "" {
+			p.ImageURL = img.URL
+			if img.CleanedURL != nil && *img.CleanedURL != "" {
+				p.ImageURL = *img.CleanedURL
+			}
+			if img.IsMainImage {
+				break
+			}
+		}
+	}
+	if cp.Ratings != nil && cp.Ratings.Value > 0 {
+		p.Rating = cp.Ratings.Value
+		p.Reviews = cp.Ratings.Count
+	}
+	rawCat := ""
+	if cp.Category != nil {
+		parts := make([]string, 0, len(cp.Category.Path)+1)
+		for _, n := range cp.Category.Path {
+			parts = append(parts, n.Title)
+		}
+		if len(parts) == 0 {
+			parts = append(parts, cp.Category.Title)
+		}
+		rawCat = strings.Join(parts, " > ")
+		p.Attributes["raw_category"] = rawCat
+		p.Attributes["category_slug"] = cp.Category.Slug
+	}
+	p.Category = NormaliseCategory(rawCat + " " + cp.Title)
+	for k, vs := range cp.StructuredAttribute {
+		if len(vs) > 0 {
+			p.Attributes[k] = strings.Join(vs, ", ")
+		}
+	}
+	if len(cp.KeyFeatures) > 0 {
+		p.Attributes["key_features"] = truncate(strings.Join(cp.KeyFeatures, "; "), 300)
+	}
+	if len(cp.Materials) > 0 {
+		p.Attributes["materials"] = strings.Join(cp.Materials, ", ")
+	}
+	if best.Price.CompareAtPrice != nil && *best.Price.CompareAtPrice > best.Price.Price {
+		p.Attributes["compare_at_price"] = fmt.Sprintf("%.2f", *best.Price.CompareAtPrice)
+	}
+	if best.Condition != nil {
+		p.Attributes["condition"] = *best.Condition
+	}
+	if inStock > 1 {
+		p.Attributes["other_offers"] = fmt.Sprintf("%d more merchants", inStock-1)
+	}
+	return p, true
 }
 
 func (c *Channel3) do(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
@@ -108,139 +299,35 @@ func (c *Channel3) do(ctx context.Context, method, path string, body any) (json.
 		return nil, fmt.Errorf("channel3: %w", err)
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode == http.StatusNotFound {
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	switch resp.StatusCode {
+	case http.StatusNotFound:
 		return nil, ErrNotFound
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("channel3: rate limited (retry after %s)", resp.Header.Get("Retry-After"))
+	case http.StatusUnauthorized:
+		return nil, fmt.Errorf("channel3: API key rejected (401): check CHANNEL3_API_KEY")
+	case http.StatusPaymentRequired:
+		return nil, fmt.Errorf("channel3: credits exhausted (402): %s", detail(data))
+	case http.StatusTooManyRequests:
+		return nil, fmt.Errorf("channel3: rate limited (429), retry after %s", resp.Header.Get("Retry-After"))
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("channel3: %s %s -> %d: %s", method, path, resp.StatusCode, truncate(string(data), 300))
+		return nil, fmt.Errorf("channel3: %s %s -> %d: %s", method, path, resp.StatusCode, truncate(detail(data), 300))
 	}
 	return json.RawMessage(data), nil
 }
 
-func extractArray(raw json.RawMessage, keys ...string) []map[string]any {
-	var arr []map[string]any
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		return arr
+func detail(data []byte) string {
+	var e struct {
+		Detail any `json:"detail"`
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil
-	}
-	for _, k := range keys {
-		if v, ok := obj[k].([]any); ok {
-			out := make([]map[string]any, 0, len(v))
-			for _, e := range v {
-				if m, ok := e.(map[string]any); ok {
-					out = append(out, m)
-				}
-			}
-			return out
+	if json.Unmarshal(data, &e) == nil && e.Detail != nil {
+		if s, ok := e.Detail.(string); ok {
+			return s
 		}
+		b, _ := json.Marshal(e.Detail)
+		return string(b)
 	}
-	return nil
-}
-
-func decodeProduct(m map[string]any) Product {
-	p := Product{Source: "channel3", Currency: "USD", Attributes: map[string]string{}}
-	p.ID = str(m, "id", "product_id", "sku")
-	p.Title = str(m, "title", "name", "product_name")
-	p.Brand = str(m, "brand_name", "brand")
-	if b, ok := m["brand"].(map[string]any); ok {
-		p.Brand = str(b, "name")
-	}
-	p.Merchant = str(m, "merchant_name", "merchant", "seller", "retailer", "store")
-	if mm, ok := m["merchant"].(map[string]any); ok {
-		p.Merchant = str(mm, "name")
-	}
-	if p.Merchant == "" {
-		p.Merchant = p.Brand
-	}
-	if p.Merchant == "" {
-		p.Merchant = "unknown"
-	}
-	p.URL = str(m, "url", "product_url", "link")
-	p.ImageURL = str(m, "image_url", "image", "thumbnail")
-	if imgs, ok := m["image_urls"].([]any); ok && len(imgs) > 0 {
-		if s, ok := imgs[0].(string); ok {
-			p.ImageURL = s
-		}
-	}
-	p.Description = truncate(str(m, "description", "summary"), 400)
-	// price: number, string or object
-	switch v := m["price"].(type) {
-	case float64:
-		p.Price = v
-	case string:
-		p.Price, _ = strconv.ParseFloat(strings.TrimLeft(v, "$"), 64)
-	case map[string]any:
-		p.Price = num(v, "price", "amount", "value", "current", "current_price")
-		if cur := str(v, "currency", "currency_code"); cur != "" {
-			p.Currency = cur
-		}
-	}
-	if p.Price == 0 {
-		p.Price = num(m, "current_price", "sale_price", "amount")
-	}
-	if cur := str(m, "currency", "currency_code"); cur != "" {
-		p.Currency = cur
-	}
-	p.Rating = num(m, "rating", "average_rating", "stars")
-	p.Reviews = int(num(m, "review_count", "reviews", "rating_count", "num_reviews"))
-	cat := str(m, "category", "category_name", "product_type")
-	if cs, ok := m["categories"].([]any); ok && len(cs) > 0 {
-		if s, ok := cs[0].(string); ok {
-			cat = s
-		}
-	}
-	p.Category = NormaliseCategory(cat)
-	if cat != "" {
-		p.Attributes["raw_category"] = cat
-	}
-	if attrs, ok := m["attributes"].(map[string]any); ok {
-		for k, v := range attrs {
-			p.Attributes[k] = fmt.Sprint(v)
-		}
-	}
-	if avail := str(m, "availability"); avail != "" {
-		p.Attributes["availability"] = avail
-	}
-	return p
-}
-
-func str(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			switch s := v.(type) {
-			case string:
-				if s != "" {
-					return s
-				}
-			case float64:
-				return strconv.FormatFloat(s, 'f', -1, 64)
-			}
-		}
-	}
-	return ""
-}
-
-func num(m map[string]any, keys ...string) float64 {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			switch n := v.(type) {
-			case float64:
-				return n
-			case string:
-				if f, err := strconv.ParseFloat(strings.TrimLeft(n, "$"), 64); err == nil {
-					return f
-				}
-			}
-		}
-	}
-	return 0
+	return string(data)
 }
 
 func truncate(s string, n int) string {

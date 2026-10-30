@@ -224,7 +224,13 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 				if in.Limit <= 0 {
 					in.Limit = 8
 				}
-				res, err := s.Catalog.Search(ctx, catalog.Query{Text: in.Query, MaxPrice: in.MaxPrice, Category: in.Category, Limit: in.Limit})
+				cur := ""
+				if m, err := s.Store.GetMission(missionID); err == nil {
+					if md, err := s.Store.GetMandate(m.MandateID); err == nil {
+						cur = md.Currency
+					}
+				}
+				res, err := s.Catalog.Search(ctx, catalog.Query{Text: in.Query, MaxPrice: in.MaxPrice, Category: in.Category, Limit: in.Limit, Currency: cur})
 				if err != nil {
 					return "", err
 				}

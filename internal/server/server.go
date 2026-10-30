@@ -130,7 +130,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	maxPrice, _ := strconv.ParseFloat(q.Get("max_price"), 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	res, err := s.catalog.Search(r.Context(), catalog.Query{Text: q.Get("q"), MaxPrice: maxPrice, Category: q.Get("category"), Limit: limit})
+	res, err := s.catalog.Search(r.Context(), catalog.Query{Text: q.Get("q"), MaxPrice: maxPrice, Category: q.Get("category"), Limit: limit, Currency: q.Get("currency")})
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return

@@ -189,7 +189,7 @@ docker build -t mandate . && docker run --rm -p 8080:8080 --env-file .env mandat
 
 - **PayPal**: Orders v2 (create, capture, get), OAuth2, sandbox checkout. Central to the product: it is the only way money moves.
 - **AG Grid** (Community): the products-considered grid, the proposal item grid and the ledger (sorting, filtering, pagination, CSV export, themed for light and dark mode via the Theming API).
-- **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`).
+- **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`): `POST /v1/search` with price, availability and condition filters and locale config, `GET /v1/products/{id}` for details. Each product is normalised to its cheapest in-stock offer (merchant domain, buy URL, price), with brand, cross-merchant ratings, category path, structured attributes and key features passed through to the agent.
 - **Render**: `render.yaml` and Docker image for one-click deployment.
 
 ## Security notes and limits

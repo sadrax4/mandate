@@ -504,9 +504,21 @@ func TestPartialRefundCreditsOnlyTheRefundedAmount(t *testing.T) {
 	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
 		t.Fatal("partial refund must not mark the proposal refunded")
 	}
-	// the same delivery again must not credit twice; a full refund credits the rest and no more
+	// the same delivery again must not credit twice
 	send("10.00")
-	send("1000.00")
+	pay, _ = e.st.GetPayment(orderID)
+	if spentDup, _ := e.mandateNumbers(mdID); pay.Refunded != 10 || spentDup != spent1 {
+		t.Fatalf("redelivered refund credited twice: refunded=%v spent=%v", pay.Refunded, spentDup)
+	}
+	// a different refund for more than the remainder credits the rest and no more
+	body2 := `{"id":"WH-r2","event_type":"PAYMENT.CAPTURE.REFUNDED","resource_type":"refund","resource":{"id":"R2","status":"COMPLETED","amount":{"currency_code":"USD","value":"1000.00"},"supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`
+	req2, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body2))
+	req2.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp2, err := e.cli.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
 	pay, _ = e.st.GetPayment(orderID)
 	spent2, _ := e.mandateNumbers(mdID)
 	if pay.Status != store.PaymentRefunded || pay.Refunded != pay.Amount || spent2 != 0 {
@@ -1115,5 +1127,60 @@ func TestLateCaptureOfASupersededOrderIsBookedButNotMistakenForTheCurrentOne(t *
 	e.srv.markPaid("MOCK-OLD", &paypal.Order{ID: "MOCK-OLD", Status: "COMPLETED", CaptureID: "CAPOLD", Amount: 39.95, Currency: "USD"})
 	if spentAgain, _ := e.mandateNumbers(mdID); spentAgain != spentEnd {
 		t.Fatalf("double booking: %v -> %v", spentEnd, spentAgain)
+	}
+}
+
+func TestCaptureAfterWithdrawalIsBookedAndFlagged(t *testing.T) {
+	// The approver withdraws the order; PayPal captures it anyway (buyer was
+	// mid-checkout). The money moved, so it is booked and flagged; the
+	// proposal stays rejected.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	msID, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	var rj map[string]any
+	e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "no"}, &rj)
+	_, _ = e.pp.Approve(orderID, true)
+	captured, err := e.pp.CaptureOrder(context.Background(), orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.markPaid(orderID, captured)
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if !pay.Accounted || pay.Status != store.PaymentCompleted || spent != pay.Amount || reserved != 0 {
+		t.Fatalf("late capture not booked: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	e.waitMission(msID, store.MissionAwaitingApproval) // the agent's revised proposal is untouched
+	var detail map[string]any
+	e.get("/api/missions/"+msID, &detail)
+	var flagged bool
+	for _, ev := range detail["events"].([]any) {
+		if d, ok := ev.(map[string]any)["data"].(map[string]any); ok && d["refund_required"] == true {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Fatal("capture after withdrawal must be flagged for refund")
+	}
+}
+
+func TestRestartRecomputesReservations(t *testing.T) {
+	e := newEnv(t)
+	mdID, _, orderID := e.startAutoApproved()
+	// simulate a crash that left the mandate's reserved total inflated
+	_ = e.st.UpdateMandate(mdID, func(m *mandate.Mandate) error { m.Reserved = 999; return nil })
+	cat := catalog.NewMock()
+	shopper := agent.NewShopper(agent.Fake{}, cat, e.st)
+	srv2 := New(Config{PublicURL: e.ts.URL, StaticDir: "/nonexistent", Currency: "USD"}, e.st, e.pp, shopper, cat)
+	_ = srv2
+	pay, _ := e.st.GetPayment(orderID)
+	_, reserved := e.mandateNumbers(mdID)
+	if reserved != pay.Amount {
+		t.Fatalf("reserved after restart = %v, want %v", reserved, pay.Amount)
 	}
 }

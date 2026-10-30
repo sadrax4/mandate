@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"mandate/internal/mandate"
+	"mandate/internal/store"
 )
 
 // Insights aggregates the ledger for the spending dashboard: every purchased
@@ -89,14 +90,15 @@ func (s *Server) handleInsights(w http.ResponseWriter, _ *http.Request) {
 		if p.Vaulted {
 			via = "saved PayPal"
 		}
-		completed := p.Status == "COMPLETED"
+		completed := p.Status == store.PaymentCompleted || p.Status == store.PaymentPartiallyRefunded
+		net := mandate.Round(p.Amount - p.Refunded)
 		if completed {
-			captured = mandate.Round(captured + p.Amount)
+			captured = mandate.Round(captured + net)
 			orders++
 			if r := mdRows[p.MandateID]; r != nil {
 				r.Orders++
 			}
-			add(byDay, p.CreatedAt.UTC().Format("2006-01-02"), p.Amount)
+			add(byDay, p.CreatedAt.UTC().Format("2006-01-02"), net)
 		}
 		pr, err := s.st.GetProposal(p.ProposalID)
 		if err != nil {

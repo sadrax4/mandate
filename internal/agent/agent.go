@@ -78,7 +78,6 @@ func (s *Shopper) Forget(missionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, missionID)
-	s.dropLockIfIdle(missionID)
 	for i, id := range s.order {
 		if id == missionID {
 			s.order = append(s.order[:i], s.order[i+1:]...)
@@ -87,18 +86,9 @@ func (s *Shopper) Forget(missionID string) {
 	}
 }
 
-// dropLockIfIdle removes a mission's run lock only when nobody holds it, so
-// an in-flight turn keeps serialising against later runs. Call with s.mu held.
-func (s *Shopper) dropLockIfIdle(missionID string) {
-	l, ok := s.runLocks[missionID]
-	if !ok {
-		return
-	}
-	if l.TryLock() {
-		l.Unlock()
-		delete(s.runLocks, missionID)
-	}
-}
+// Run locks are never deleted: a mutex per mission ever seen is negligible,
+// and dropping one while a turn holds it would let two turns of the same
+// mission run at once.
 
 // runLock serialises agent runs per mission: a rejection arriving while the
 // model is still finishing its previous turn waits instead of racing it.
@@ -239,7 +229,6 @@ func (s *Shopper) session(missionID string, replace bool) Session {
 		}
 		s.order = s.order[1:]
 		delete(s.sessions, oldest)
-		s.dropLockIfIdle(oldest)
 	}
 	return sess
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -190,7 +191,10 @@ type Payment struct {
 	Refunded float64 `json:"refunded,omitempty"`
 	// Accounted is set exactly once, when the capture was booked into the
 	// mandate's spent total. It is the idempotency key for paid-marking.
-	Accounted bool      `json:"accounted"`
+	Accounted bool `json:"accounted"`
+	// RefundIDs lists the PayPal refund (or reversal) resources already
+	// credited, so a redelivered webhook never credits twice.
+	RefundIDs []string  `json:"refund_ids,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -232,6 +236,8 @@ type Store struct {
 	saveMu    sync.Mutex
 	saveTimer *time.Timer
 	fileMu    sync.Mutex // serialises writes of the data file
+	gen       uint64     // bumped on every mutation (under mu); snapshots carry it
+	written   uint64     // generation of the snapshot on disk (under fileMu)
 }
 
 // ErrNotFound is returned for unknown IDs.
@@ -265,11 +271,19 @@ func Open(path string) (*Store, error) {
 	}
 	if st.s.Version < 1 {
 		// Payments written before the Reserved flag existed hold a budget
-		// reservation whenever they are still payable; mark them so a later
-		// cancel, void or capture releases it exactly once.
+		// reservation whenever they are still payable. Files from builds that
+		// already had the flag (some rows carry it) are left alone.
+		hasFlag := false
 		for _, p := range st.s.Payments {
-			if !IsFinalPayment(p.Status) {
-				p.Reserved = true
+			if p.Reserved {
+				hasFlag = true
+			}
+		}
+		if !hasFlag {
+			for _, p := range st.s.Payments {
+				if !IsFinalPayment(p.Status) && p.Status != PaymentCaptureFailed {
+					p.Reserved = true
+				}
 			}
 		}
 	}
@@ -293,32 +307,50 @@ func Open(path string) (*Store, error) {
 	return st, nil
 }
 
-// persistNow writes the state synchronously. The caller holds st.mu.
+// persistNow writes the state synchronously. The caller holds st.mu for
+// writing, so the snapshot is consistent and carries the latest generation.
 func (st *Store) persistNow() {
+	st.gen++
 	if st.path == "" {
 		return
 	}
 	data, err := json.MarshalIndent(st.s, "", "  ")
 	if err != nil {
+		log.Printf("store: marshal: %v", err)
 		return
 	}
-	st.writeFile(data)
+	st.writeFile(data, st.gen)
 }
 
-// writeFile replaces the data file atomically; concurrent writers queue.
-func (st *Store) writeFile(data []byte) {
+// writeFile replaces the data file atomically. Snapshots are ordered by
+// generation, so a slower writer holding an older snapshot never overwrites
+// a newer one.
+func (st *Store) writeFile(data []byte, gen uint64) {
 	st.fileMu.Lock()
 	defer st.fileMu.Unlock()
-	_ = os.MkdirAll(filepath.Dir(st.path), 0o755)
-	tmp := st.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err == nil {
-		_ = os.Rename(tmp, st.path)
+	if gen <= st.written {
+		return
 	}
+	if err := os.MkdirAll(filepath.Dir(st.path), 0o755); err != nil {
+		log.Printf("store: mkdir: %v", err)
+		return
+	}
+	tmp := st.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		log.Printf("store: write %s: %v", tmp, err)
+		return
+	}
+	if err := os.Rename(tmp, st.path); err != nil {
+		log.Printf("store: rename %s: %v", st.path, err)
+		return
+	}
+	st.written = gen
 }
 
 // persist schedules a save. It is called with st.mu held, so it must not
 // block on the file; the actual write happens on a timer goroutine.
 func (st *Store) persist() {
+	st.gen++
 	if st.path == "" {
 		return
 	}
@@ -334,12 +366,14 @@ func (st *Store) flush() {
 	st.saveTimer = nil
 	st.saveMu.Unlock()
 	st.mu.RLock()
+	gen := st.gen
 	data, err := json.MarshalIndent(st.s, "", "  ")
 	st.mu.RUnlock()
 	if err != nil {
+		log.Printf("store: marshal: %v", err)
 		return
 	}
-	st.writeFile(data)
+	st.writeFile(data, gen)
 }
 
 // Close writes any pending change to disk. Call it on shutdown. A flush that

@@ -44,11 +44,11 @@ export default function Ledger() {
   const mcp = config?.paypal_mcp
 
   const totals = useMemo(() => {
-    const completed = rows.filter((r) => r.status === 'COMPLETED')
+    const completed = rows.filter((r) => r.status === 'COMPLETED' || r.status === 'PARTIALLY_REFUNDED')
     return {
       count: rows.length,
       completed: completed.length,
-      paid: completed.reduce((s, r) => s + r.amount, 0),
+      paid: completed.reduce((s, r) => s + r.amount - (r.refunded ?? 0), 0),
       pending: rows.filter((r) => r.status === 'PAYER_ACTION_REQUIRED' || r.status === 'CREATED' || r.status === 'APPROVED').reduce((s, r) => s + r.amount, 0),
     }
   }, [rows])

@@ -95,6 +95,8 @@ export type Payment = {
   payer_email?: string
   mode: string
   vaulted?: boolean
+  refunded?: number
+  accounted?: boolean
   created_at: string
   updated_at: string
 }

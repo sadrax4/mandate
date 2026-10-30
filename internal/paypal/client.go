@@ -1,0 +1,327 @@
+// Package paypal wraps the parts of the PayPal REST API that Mandate uses:
+// OAuth2 client-credentials tokens and the Orders v2 API (create, get,
+// capture). The Client interface lets the server swap in a Mock for tests and
+// offline demos.
+package paypal
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	SandboxBaseURL = "https://api-m.sandbox.paypal.com"
+	LiveBaseURL    = "https://api-m.paypal.com"
+)
+
+// OrderItem is one purchase_units[].items[] entry.
+type OrderItem struct {
+	Name       string
+	SKU        string
+	Quantity   int
+	UnitAmount float64
+	Category   string // PHYSICAL_GOODS | DIGITAL_GOODS | DONATION
+}
+
+// CreateOrderRequest describes the order to create.
+type CreateOrderRequest struct {
+	Currency    string
+	Amount      float64
+	Description string
+	CustomID    string // our proposal/mission reference, also used as idempotency key
+	Items       []OrderItem
+	ReturnURL   string
+	CancelURL   string
+	BrandName   string
+}
+
+// Order is the normalised view of a PayPal order.
+type Order struct {
+	ID         string          `json:"id"`
+	Status     string          `json:"status"`
+	ApproveURL string          `json:"approve_url,omitempty"`
+	CaptureID  string          `json:"capture_id,omitempty"`
+	Amount     float64         `json:"amount"`
+	Currency   string          `json:"currency"`
+	PayerEmail string          `json:"payer_email,omitempty"`
+	Raw        json.RawMessage `json:"-"`
+}
+
+// Client is implemented by the real API client and the Mock.
+type Client interface {
+	CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error)
+	CaptureOrder(ctx context.Context, orderID string) (*Order, error)
+	GetOrder(ctx context.Context, orderID string) (*Order, error)
+	Mode() string // "sandbox", "live" or "mock"
+}
+
+// APIError carries the PayPal error payload.
+type APIError struct {
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("paypal: HTTP %d: %s", e.Status, e.Body) }
+
+// REST talks to the PayPal REST API.
+type REST struct {
+	ClientID string
+	Secret   string
+	BaseURL  string
+	HTTP     *http.Client
+
+	mu       sync.Mutex
+	token    string
+	tokenExp time.Time
+}
+
+// NewREST builds a client for the sandbox or live environment.
+func NewREST(clientID, secret, baseURL string) *REST {
+	if baseURL == "" {
+		baseURL = SandboxBaseURL
+	}
+	return &REST{ClientID: clientID, Secret: secret, BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 30 * time.Second}}
+}
+
+// Mode implements Client.
+func (r *REST) Mode() string {
+	if r.BaseURL == LiveBaseURL {
+		return "live"
+	}
+	return "sandbox"
+}
+
+func (r *REST) accessToken(ctx context.Context) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.token != "" && time.Now().Before(r.tokenExp.Add(-60*time.Second)) {
+		return r.token, nil
+	}
+	form := url.Values{"grant_type": {"client_credentials"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.BaseURL+"/v1/oauth2/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth(r.ClientID, r.Secret)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := r.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("paypal: token request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", &APIError{Status: resp.StatusCode, Body: string(body)}
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
+		return "", fmt.Errorf("paypal: bad token response: %s", string(body))
+	}
+	r.token = tok.AccessToken
+	r.tokenExp = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+	return r.token, nil
+}
+
+func (r *REST) do(ctx context.Context, method, path string, body any, requestID string) (json.RawMessage, int, error) {
+	tok, err := r.accessToken(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, r.BaseURL+path, rdr)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "return=representation")
+	if requestID != "" {
+		req.Header.Set("PayPal-Request-Id", requestID)
+	}
+	resp, err := r.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("paypal: %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, &APIError{Status: resp.StatusCode, Body: string(data)}
+	}
+	return json.RawMessage(data), resp.StatusCode, nil
+}
+
+func money(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
+
+// CreateOrder implements Client using POST /v2/checkout/orders with
+// intent=CAPTURE and the PayPal payment source so the buyer approves on
+// PayPal and is sent back to ReturnURL.
+func (r *REST) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error) {
+	if req.Amount <= 0 {
+		return nil, errors.New("paypal: amount must be positive")
+	}
+	cur := strings.ToUpper(req.Currency)
+	if cur == "" {
+		cur = "USD"
+	}
+	items := make([]map[string]any, 0, len(req.Items))
+	itemTotal := 0.0
+	for _, it := range req.Items {
+		q := it.Quantity
+		if q <= 0 {
+			q = 1
+		}
+		cat := it.Category
+		if cat == "" {
+			cat = "PHYSICAL_GOODS"
+		}
+		name := it.Name
+		if len(name) > 127 {
+			name = name[:127]
+		}
+		items = append(items, map[string]any{
+			"name":        name,
+			"sku":         it.SKU,
+			"quantity":    strconv.Itoa(q),
+			"category":    cat,
+			"unit_amount": map[string]string{"currency_code": cur, "value": money(it.UnitAmount)},
+		})
+		itemTotal += it.UnitAmount * float64(q)
+	}
+	amount := map[string]any{"currency_code": cur, "value": money(req.Amount)}
+	if len(items) > 0 && money(itemTotal) == money(req.Amount) {
+		amount["breakdown"] = map[string]any{"item_total": map[string]string{"currency_code": cur, "value": money(itemTotal)}}
+	} else {
+		items = nil // PayPal rejects item lists whose total does not match the breakdown
+	}
+	desc := req.Description
+	if len(desc) > 127 {
+		desc = desc[:127]
+	}
+	pu := map[string]any{"amount": amount, "description": desc}
+	if req.CustomID != "" {
+		pu["custom_id"] = req.CustomID
+	}
+	if items != nil {
+		pu["items"] = items
+	}
+	brand := req.BrandName
+	if brand == "" {
+		brand = "Mandate"
+	}
+	body := map[string]any{
+		"intent":         "CAPTURE",
+		"purchase_units": []any{pu},
+		"payment_source": map[string]any{
+			"paypal": map[string]any{
+				"experience_context": map[string]any{
+					"brand_name":          brand,
+					"user_action":         "PAY_NOW",
+					"shipping_preference": "NO_SHIPPING",
+					"return_url":          req.ReturnURL,
+					"cancel_url":          req.CancelURL,
+				},
+			},
+		},
+	}
+	raw, _, err := r.do(ctx, http.MethodPost, "/v2/checkout/orders", body, req.CustomID)
+	if err != nil {
+		return nil, err
+	}
+	return parseOrder(raw)
+}
+
+// CaptureOrder implements Client using POST /v2/checkout/orders/{id}/capture.
+func (r *REST) CaptureOrder(ctx context.Context, orderID string) (*Order, error) {
+	raw, _, err := r.do(ctx, http.MethodPost, "/v2/checkout/orders/"+url.PathEscape(orderID)+"/capture", map[string]any{}, "capture-"+orderID)
+	if err != nil {
+		var apiErr *APIError
+		// An ORDER_ALREADY_CAPTURED error means the buyer hit the return URL twice; treat it as success.
+		if errors.As(err, &apiErr) && strings.Contains(apiErr.Body, "ORDER_ALREADY_CAPTURED") {
+			return r.GetOrder(ctx, orderID)
+		}
+		return nil, err
+	}
+	return parseOrder(raw)
+}
+
+// GetOrder implements Client using GET /v2/checkout/orders/{id}.
+func (r *REST) GetOrder(ctx context.Context, orderID string) (*Order, error) {
+	raw, _, err := r.do(ctx, http.MethodGet, "/v2/checkout/orders/"+url.PathEscape(orderID), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	return parseOrder(raw)
+}
+
+func parseOrder(raw json.RawMessage) (*Order, error) {
+	var o struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Links  []struct {
+			Rel  string `json:"rel"`
+			Href string `json:"href"`
+		} `json:"links"`
+		PurchaseUnits []struct {
+			Amount struct {
+				CurrencyCode string `json:"currency_code"`
+				Value        string `json:"value"`
+			} `json:"amount"`
+			Payments struct {
+				Captures []struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+					Amount struct {
+						CurrencyCode string `json:"currency_code"`
+						Value        string `json:"value"`
+					} `json:"amount"`
+				} `json:"captures"`
+			} `json:"payments"`
+		} `json:"purchase_units"`
+		Payer struct {
+			EmailAddress string `json:"email_address"`
+		} `json:"payer"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil {
+		return nil, fmt.Errorf("paypal: decode order: %w", err)
+	}
+	out := &Order{ID: o.ID, Status: o.Status, Raw: raw, PayerEmail: o.Payer.EmailAddress}
+	for _, l := range o.Links {
+		if l.Rel == "payer-action" || l.Rel == "approve" {
+			out.ApproveURL = l.Href
+		}
+	}
+	if len(o.PurchaseUnits) > 0 {
+		pu := o.PurchaseUnits[0]
+		out.Currency = pu.Amount.CurrencyCode
+		out.Amount, _ = strconv.ParseFloat(pu.Amount.Value, 64)
+		if len(pu.Payments.Captures) > 0 {
+			c := pu.Payments.Captures[0]
+			out.CaptureID = c.ID
+			if c.Amount.Value != "" {
+				out.Amount, _ = strconv.ParseFloat(c.Amount.Value, 64)
+				out.Currency = c.Amount.CurrencyCode
+			}
+		}
+	}
+	return out, nil
+}

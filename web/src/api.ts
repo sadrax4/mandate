@@ -1,0 +1,216 @@
+export type Mandate = {
+  id: string
+  name: string
+  currency: string
+  total_budget: number
+  max_per_item: number
+  auto_approve_under: number
+  allowed_categories: string[] | null
+  blocked_merchants: string[] | null
+  min_rating: number
+  require_approval: boolean
+  spent: number
+  reserved: number
+  created_at: string
+}
+
+export type Mission = {
+  id: string
+  mandate_id: string
+  goal: string
+  status: string
+  summary?: string
+  error?: string
+  proposal_id?: string
+  order_id?: string
+  turns: number
+  created_at: string
+  updated_at: string
+}
+
+export type CartItem = {
+  product_id: string
+  title: string
+  merchant: string
+  category: string
+  unit_price: number
+  currency: string
+  quantity: number
+  rating?: number
+  reason?: string
+}
+
+export type Violation = { code: string; message: string; product_id?: string }
+
+export type Decision = {
+  allowed: boolean
+  requires_approval: boolean
+  total: number
+  currency: string
+  remaining_budget: number
+  remaining_after: number
+  violations: Violation[]
+  checks_passed: string[]
+}
+
+export type Proposal = {
+  id: string
+  mission_id: string
+  mandate_id: string
+  cart: { items: CartItem[]; currency: string }
+  decision: Decision
+  summary: string
+  status: string
+  feedback?: string
+  order_id?: string
+  created_at: string
+  decided_at?: string
+}
+
+export type Payment = {
+  id: string
+  proposal_id: string
+  mission_id: string
+  mandate_id: string
+  status: string
+  amount: number
+  currency: string
+  approve_url?: string
+  capture_id?: string
+  payer_email?: string
+  mode: string
+  created_at: string
+  updated_at: string
+}
+
+export type LedgerRow = Payment & { goal: string; mandate_name: string; items: number; budget: number }
+
+export type Product = {
+  id: string
+  title: string
+  brand?: string
+  merchant: string
+  category: string
+  price: number
+  currency: string
+  rating?: number
+  reviews?: number
+  url?: string
+  image_url?: string
+  description?: string
+  attributes?: Record<string, string>
+  source: string
+}
+
+export type Event = {
+  id: number
+  mission_id: string
+  type: string
+  message: string
+  data?: any
+  at: string
+}
+
+export type MissionDetail = {
+  mission: Mission
+  mandate: Mandate | null
+  proposals: Proposal[] | null
+  payments: Payment[] | null
+  events: Event[] | null
+}
+
+export type Config = {
+  paypal_mode: string
+  llm_provider: string
+  catalog: string
+  currency: string
+  public_url: string
+  version: string
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...init })
+  const text = await res.text()
+  let body: any = null
+  try {
+    body = text ? JSON.parse(text) : null
+  } catch {
+    body = { error: text }
+  }
+  if (!res.ok) throw new Error(body?.error || `${res.status} ${res.statusText}`)
+  return body as T
+}
+
+export const api = {
+  config: () => req<Config>('/api/config'),
+  categories: () => req<string[]>('/api/categories'),
+  mandates: () => req<Mandate[]>('/api/mandates'),
+  mandate: (id: string) => req<{ mandate: Mandate; missions: Mission[] }>(`/api/mandates/${id}`),
+  createMandate: (m: Partial<Mandate>) => req<Mandate>('/api/mandates', { method: 'POST', body: JSON.stringify(m) }),
+  missions: () => req<Mission[]>('/api/missions'),
+  mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
+  createMission: (mandate_id: string, goal: string) =>
+    req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id, goal }) }),
+  approve: (proposalId: string) =>
+    req<{ payment: Payment; approve_url: string }>(`/api/proposals/${proposalId}/approve`, { method: 'POST' }),
+  reject: (proposalId: string, reason: string) =>
+    req<{ ok: boolean }>(`/api/proposals/${proposalId}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  ledger: () => req<LedgerRow[]>('/api/ledger'),
+  syncPayment: (orderId: string) => req<Payment>(`/api/payments/${orderId}/sync`, { method: 'POST' }),
+}
+
+export const money = (v: number | undefined | null, cur = 'USD') =>
+  v === undefined || v === null || Number.isNaN(v)
+    ? ''
+    : new Intl.NumberFormat('en-US', { style: 'currency', currency: cur || 'USD', maximumFractionDigits: 2 }).format(v)
+
+export const STATUS_LABEL: Record<string, string> = {
+  running: 'Agent working',
+  awaiting_approval: 'Needs your approval',
+  awaiting_payment: 'Pay with PayPal',
+  paid: 'Paid',
+  cancelled: 'Cancelled',
+  no_proposal: 'No proposal',
+  failed: 'Failed',
+  pending_approval: 'Pending approval',
+  auto_approved: 'Auto-approved',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  rejected_by_policy: 'Blocked by mandate',
+  COMPLETED: 'Completed',
+  PAYER_ACTION_REQUIRED: 'Awaiting buyer',
+  APPROVED: 'Approved by buyer',
+  CREATED: 'Created',
+  CANCELLED: 'Cancelled',
+  CAPTURE_FAILED: 'Capture failed',
+}
+
+export const label = (s: string) => STATUS_LABEL[s] ?? s.replace(/_/g, ' ')
+
+export const statusTone = (s: string) => {
+  switch (s) {
+    case 'paid':
+    case 'COMPLETED':
+    case 'approved':
+    case 'auto_approved':
+    case 'APPROVED':
+      return 'good'
+    case 'awaiting_approval':
+    case 'pending_approval':
+    case 'awaiting_payment':
+    case 'PAYER_ACTION_REQUIRED':
+    case 'CREATED':
+      return 'warn'
+    case 'failed':
+    case 'rejected_by_policy':
+    case 'CAPTURE_FAILED':
+    case 'cancelled':
+    case 'CANCELLED':
+    case 'rejected':
+      return 'bad'
+    case 'running':
+      return 'live'
+    default:
+      return 'muted'
+  }
+}

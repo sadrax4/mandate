@@ -1,0 +1,145 @@
+// Command mandate runs the Mandate server: an AI shopping agent that can only
+// spend inside a human-defined mandate and pays through PayPal.
+package main
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"mandate/internal/agent"
+	"mandate/internal/catalog"
+	"mandate/internal/paypal"
+	"mandate/internal/server"
+	"mandate/internal/store"
+)
+
+var version = "dev"
+
+func main() {
+	loadDotEnv(".env")
+	port := env("PORT", "8080")
+	publicURL := env("PUBLIC_URL", "http://localhost:"+port)
+	if ext := os.Getenv("RENDER_EXTERNAL_URL"); ext != "" && os.Getenv("PUBLIC_URL") == "" {
+		publicURL = ext // Render sets this automatically
+	}
+
+	st, err := store.Open(env("DATA_FILE", "data/mandate.json"))
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+
+	// Catalog: Channel3 when a key is present, otherwise the built-in demo catalog.
+	var cat catalog.Searcher
+	switch strings.ToLower(env("CATALOG", "")) {
+	case "channel3":
+		cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
+	case "mock", "":
+		if os.Getenv("CHANNEL3_API_KEY") != "" && env("CATALOG", "") == "" {
+			cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
+		} else {
+			cat = catalog.NewMock()
+		}
+	default:
+		log.Fatalf("unknown CATALOG %q (mock|channel3)", os.Getenv("CATALOG"))
+	}
+
+	// LLM provider.
+	var provider agent.Provider
+	switch strings.ToLower(env("LLM_PROVIDER", "")) {
+	case "anthropic":
+		provider = agent.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("ANTHROPIC_MODEL"), os.Getenv("ANTHROPIC_EFFORT"))
+	case "fake":
+		provider = agent.Fake{}
+	case "":
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			provider = agent.NewAnthropic(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("ANTHROPIC_MODEL"), os.Getenv("ANTHROPIC_EFFORT"))
+		} else {
+			log.Println("ANTHROPIC_API_KEY not set: using the scripted offline agent (LLM_PROVIDER=fake)")
+			provider = agent.Fake{}
+		}
+	default:
+		log.Fatalf("unknown LLM_PROVIDER %q (anthropic|fake)", os.Getenv("LLM_PROVIDER"))
+	}
+
+	// PayPal.
+	var pp paypal.Client
+	mode := strings.ToLower(env("PAYPAL_MODE", ""))
+	if mode == "" {
+		if os.Getenv("PAYPAL_CLIENT_ID") != "" {
+			mode = "sandbox"
+		} else {
+			mode = "mock"
+		}
+	}
+	switch mode {
+	case "sandbox":
+		pp = paypal.NewREST(os.Getenv("PAYPAL_CLIENT_ID"), os.Getenv("PAYPAL_CLIENT_SECRET"), paypal.SandboxBaseURL)
+	case "live":
+		pp = paypal.NewREST(os.Getenv("PAYPAL_CLIENT_ID"), os.Getenv("PAYPAL_CLIENT_SECRET"), paypal.LiveBaseURL)
+	case "mock":
+		log.Println("PAYPAL_MODE=mock: using the built-in checkout simulator")
+		pp = paypal.NewMock(publicURL)
+	default:
+		log.Fatalf("unknown PAYPAL_MODE %q (sandbox|live|mock)", mode)
+	}
+
+	shopper := agent.NewShopper(provider, cat, st)
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version}, st, pp, shopper, cat)
+
+	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		log.Printf("Mandate %s listening on %s (public %s) | llm=%s paypal=%s catalog=%s", version, httpSrv.Addr, publicURL, provider.Name(), pp.Mode(), cat.Name())
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(ctx)
+	fmt.Println("bye")
+}
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// loadDotEnv reads KEY=VALUE lines without overriding variables already set.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		v = strings.Trim(v, `"'`)
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+}

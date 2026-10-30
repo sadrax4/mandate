@@ -1,0 +1,63 @@
+// End-to-end browser smoke test. Run the server in offline demo mode first:
+//   PAYPAL_MODE=mock LLM_PROVIDER=fake DATA_FILE=/tmp/mandate-smoke.json go run ./cmd/mandate
+// then: BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke.cjs
+// Requires: npm i -g playwright && npx playwright install chromium
+const { chromium } = require('playwright'); (async () => {
+const base = process.env.BASE_URL || 'http://localhost:8080'
+const S = process.env.SHOTS || 'docs/screenshots'
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1360, height: 900 } })
+page.on('pageerror', (e) => console.log('PAGEERROR', e.message))
+page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE', m.text()) })
+
+await page.goto(base + '/#/')
+await page.waitForSelector('text=Mandates')
+await page.click('text=Create demo mandate')
+await page.waitForSelector('text=Desk refresh')
+await page.screenshot({ path: `${S}/01-dashboard.png`, fullPage: true })
+
+await page.click('text=A mechanical keyboard with brown switches')
+await page.click('button:has-text("Start mission")')
+await page.waitForURL(/#\/missions\//)
+await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
+await page.waitForTimeout(800)
+await page.screenshot({ path: `${S}/02-mission-proposal.png`, fullPage: true })
+
+await page.click('button:has-text("Approve & pay with PayPal")')
+await page.waitForSelector('text=Pay with PayPal (simulated)', { timeout: 10000 })
+await page.screenshot({ path: `${S}/03-mock-paypal.png`, fullPage: true })
+await page.click('button:has-text("Approve and pay")')
+await page.waitForSelector('text=Payment captured', { timeout: 10000 })
+await page.waitForTimeout(800)
+await page.screenshot({ path: `${S}/04-mission-paid.png`, fullPage: true })
+
+await page.goto(base + '/#/ledger')
+await page.waitForSelector('.ag-row', { timeout: 10000 })
+await page.waitForTimeout(500)
+await page.screenshot({ path: `${S}/05-ledger.png`, fullPage: true })
+
+// rejection flow on a fresh mandate with enough budget
+const res = await page.request.post(base + '/api/mandates', { data: { name: 'Audio upgrade', currency: 'USD', total_budget: 400, max_per_item: 400, allowed_categories: ['audio'], min_rating: 4 } })
+const audio = await res.json()
+const ms = await (await page.request.post(base + '/api/missions', { data: { mandate_id: audio.id, goal: 'noise cancelling headphones' } })).json()
+await page.goto(base + '/#/missions/' + ms.id)
+await page.waitForSelector('text=Reject with feedback', { timeout: 20000 })
+await page.click('text=Reject with feedback')
+await page.fill('textarea', 'too expensive, find something cheaper')
+await page.click('text=Send back to the agent')
+await page.waitForSelector('text=Earlier proposals', { timeout: 20000 })
+await page.waitForTimeout(800)
+await page.screenshot({ path: `${S}/06-mission-after-reject.png`, fullPage: true })
+
+await page.goto(base + '/#/mandates/new')
+await page.waitForSelector('text=New mandate')
+await page.screenshot({ path: `${S}/07-new-mandate.png`, fullPage: true })
+
+// dark mode dashboard
+const dark = await browser.newPage({ viewport: { width: 1360, height: 900 }, colorScheme: 'dark' })
+await dark.goto(base + '/#/')
+await dark.waitForSelector('text=Desk refresh')
+await dark.screenshot({ path: `${S}/08-dashboard-dark.png`, fullPage: true })
+await browser.close()
+console.log('SMOKE_OK')
+})().catch(e => { console.error("SMOKE_FAIL", e); process.exit(1) })

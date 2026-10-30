@@ -58,11 +58,11 @@ func TestAskIsUnavailableInMockMode(t *testing.T) {
 func TestAskUsesReadOnlyPayPalMCPTools(t *testing.T) {
 	// swap the probe for a scripted PayPal MCP server listing
 	probeMCPSaved := probeMCP
-	probeMCP = func(_ context.Context, _ *http.Client, url, token string) ([]paypal.MCPTool, error) {
+	probeMCP = func(_ context.Context, _ *http.Client, url, token string) ([]paypal.MCPTool, string, error) {
 		if token != "mock-token" || !strings.HasSuffix(url, "/http") {
 			t.Errorf("probe called with url=%s token=%s", url, token)
 		}
-		return []paypal.MCPTool{{Name: "get_order"}, {Name: "create_order"}, {Name: "pay_order"}, {Name: "list_transactions"}, {Name: "create_refund"}, {Name: "get_refund"}}, nil
+		return []paypal.MCPTool{{Name: "get_order"}, {Name: "create_order"}, {Name: "pay_order"}, {Name: "list_transactions"}, {Name: "create_refund"}, {Name: "get_refund"}}, "sse", nil
 	}
 	t.Cleanup(func() { probeMCP = probeMCPSaved })
 
@@ -86,7 +86,7 @@ func TestAskUsesReadOnlyPayPalMCPTools(t *testing.T) {
 	var cfg map[string]any
 	e.get("/api/config", &cfg)
 	mcp := cfg["paypal_mcp"].(map[string]any)
-	if mcp["enabled"] != true || mcp["url"] != "https://mcp.sandbox.paypal.com/sse" {
+	if mcp["enabled"] != true || mcp["url"] != "https://mcp.sandbox.paypal.com/sse" || mcp["transport"] != "sse" {
 		t.Fatalf("mcp config = %v", mcp)
 	}
 	tools := mcp["tools"].([]any)

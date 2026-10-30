@@ -29,7 +29,7 @@ type tokenSource interface {
 }
 
 // probeMCP is swapped in tests.
-var probeMCP = paypal.ProbeMCP
+var probeMCP = paypal.ProbeMCPAuto
 
 type mcpState struct {
 	mu        sync.Mutex
@@ -37,6 +37,7 @@ type mcpState struct {
 	url       string   // endpoint handed to the Anthropic MCP connector
 	tools     []string // read-only tools enabled for the model
 	available int      // tools the server offers in total
+	transport string   // transport the handshake succeeded on
 	err       string
 	checkedAt time.Time
 	done      chan struct{}
@@ -79,12 +80,15 @@ func (s *Server) probeMCPServer(ts tokenSource, connectorURL string) {
 		log.Printf("PayPal MCP: disabled: %v", err)
 		return
 	}
-	tools, err := probeMCP(ctx, nil, ts.MCPURL(), tok)
+	tools, transport, err := probeMCP(ctx, nil, ts.MCPURL(), tok)
 	if err != nil {
 		s.setMCP(false, connectorURL, nil, 0, "PayPal MCP server handshake failed: "+err.Error())
 		log.Printf("PayPal MCP: disabled: %v", err)
 		return
 	}
+	s.mcp.mu.Lock()
+	s.mcp.transport = transport
+	s.mcp.mu.Unlock()
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
 		names = append(names, t.Name)
@@ -96,7 +100,7 @@ func (s *Server) probeMCPServer(ts tokenSource, connectorURL string) {
 		return
 	}
 	s.setMCP(true, connectorURL, allowed, len(tools), "")
-	log.Printf("PayPal MCP: order assistant ready: %d read-only tools enabled of %d offered (%s)", len(allowed), len(tools), strings.Join(allowed, ", "))
+	log.Printf("PayPal MCP: order assistant ready over %s: %d read-only tools enabled of %d offered (%s)", transport, len(allowed), len(tools), strings.Join(allowed, ", "))
 }
 
 func (s *Server) setMCP(enabled bool, url string, tools []string, available int, errMsg string) {
@@ -114,6 +118,7 @@ func (s *Server) mcpStatus() map[string]any {
 	}
 	if s.mcp.enabled {
 		out["url"] = s.mcp.url
+		out["transport"] = s.mcp.transport
 	}
 	if !s.mcp.checkedAt.IsZero() {
 		out["checked_at"] = s.mcp.checkedAt

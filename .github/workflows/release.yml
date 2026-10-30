@@ -1,0 +1,40 @@
+name: release
+# Builds a static Linux binary plus the web UI on every push to main and
+# publishes them as the rolling "latest" GitHub release, so small servers
+# never have to compile anything.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund && npm run build
+        working-directory: web
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::7}" -o dist/mandate ./cmd/mandate
+      - run: |
+          mkdir -p dist/web && cp -r web/dist dist/web/dist && cp .env.example deploy/install.sh dist/
+          tar -C dist -czf mandate-linux-amd64.tar.gz mandate web .env.example install.sh
+          sha256sum mandate-linux-amd64.tar.gz > mandate-linux-amd64.tar.gz.sha256
+      - run: |
+          git tag -f latest && git push -f origin latest
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: "Rolling build of main. Install on a Linux server with: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/install.sh | bash"
+          files: |
+            mandate-linux-amd64.tar.gz
+            mandate-linux-amd64.tar.gz.sha256

@@ -1,6 +1,21 @@
 # Deploying Mandate on your own server
 
-Tested on Ubuntu 22.04/24.04 with Docker. All commands run on the server.
+## Smallest servers: prebuilt binary + systemd (no Docker, no compiling)
+
+Every push to `main` publishes a Linux build as the `latest` GitHub release. On the server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sadrax4/mandate/main/deploy/install.sh | bash
+nano /opt/mandate/.env            # keys, CATALOG=channel3, PUBLIC_URL=http://SERVER_IP:8080
+systemctl restart mandate
+journalctl -u mandate -f          # logs
+```
+
+Re-run the same `curl ... | bash` line to update. The service uses about 60 MB of RAM.
+
+## Docker
+
+Tested on Ubuntu 22.04/24.04 with Docker. Building the image needs about 2 GB of RAM (or swap). All commands run on the server.
 
 ```bash
 # 1. Docker

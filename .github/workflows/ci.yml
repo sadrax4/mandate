@@ -25,3 +25,32 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+  e2e:
+    # Builds the UI and the server, runs it in offline demo mode and drives it
+    # with the Playwright walk-throughs (checkout, saved-account payments,
+    # suggestions, standing orders, insights).
+    runs-on: ubuntu-latest
+    needs: [go, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund && npm run build
+        working-directory: web
+      - run: go build -o /tmp/mandate ./cmd/mandate
+      - run: npm install --no-save --no-audit --no-fund playwright@1.63.0 && npx playwright install --with-deps chromium
+        working-directory: web
+      - name: start the server in offline demo mode
+        run: |
+          PORT=8080 STATIC_DIR=web/dist DATA_FILE=/tmp/e2e.json PUBLIC_URL=http://localhost:8080 nohup /tmp/mandate > /tmp/mandate.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/api/health && break; sleep 1; done
+      - run: NODE_PATH=$PWD/web/node_modules BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke.cjs
+      - run: NODE_PATH=$PWD/web/node_modules BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke-vault.cjs
+      - if: failure()
+        run: tail -50 /tmp/mandate.log

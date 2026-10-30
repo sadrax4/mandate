@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,7 +107,8 @@ func main() {
 	}
 
 	shopper := agent.NewShopper(provider, cat, st)
-	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID")}, st, pp, shopper, cat)
+	maxRuns, _ := strconv.Atoi(env("MAX_MISSIONS_PER_HOUR", "40"))
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns}, st, pp, shopper, cat)
 
 	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

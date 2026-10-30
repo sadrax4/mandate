@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"mandate/internal/agent"
@@ -34,6 +35,10 @@ type Config struct {
 	Version   string
 	// WebhookID is the PayPal webhook ID used to verify deliveries to /paypal/webhook.
 	WebhookID string
+	// MaxMissionsPerHour caps how many agent runs may start per hour across
+	// the whole server, so a public demo cannot drain the model budget.
+	// 0 disables the cap.
+	MaxMissionsPerHour int
 }
 
 // Server is the HTTP layer.
@@ -45,6 +50,9 @@ type Server struct {
 	shopper *agent.Shopper
 	catalog catalog.Searcher
 	mux     *http.ServeMux
+
+	rateMu     sync.Mutex
+	rateStarts []time.Time
 }
 
 // New wires the handlers.
@@ -188,11 +196,38 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mandate not found")
 		return
 	}
+	if !s.allowMissionStart() {
+		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+		return
+	}
 	m := &store.Mission{ID: store.NewID("msn"), MandateID: in.MandateID, Goal: in.Goal, Status: store.MissionRunning, CreatedAt: time.Now()}
 	s.st.PutMission(m)
 	s.st.AddEvent(m.ID, "status", "mission created: "+in.Goal, nil)
 	go s.shopper.Run(context.Background(), m.ID)
 	writeJSON(w, 201, m)
+}
+
+// allowMissionStart enforces the per-hour cap on agent runs (missions and
+// rejections both start a run).
+func (s *Server) allowMissionStart() bool {
+	if s.cfg.MaxMissionsPerHour <= 0 {
+		return true
+	}
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	cutoff := time.Now().Add(-time.Hour)
+	kept := s.rateStarts[:0]
+	for _, t := range s.rateStarts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	s.rateStarts = kept
+	if len(s.rateStarts) >= s.cfg.MaxMissionsPerHour {
+		return false
+	}
+	s.rateStarts = append(s.rateStarts, time.Now())
+	return true
 }
 
 func (s *Server) handleGetMission(w http.ResponseWriter, r *http.Request) {
@@ -361,6 +396,10 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Status != store.ProposalPending && p.Status != store.ProposalAutoApproved {
 		writeErr(w, 409, "proposal is "+p.Status+", it cannot be rejected")
+		return
+	}
+	if !s.allowMissionStart() {
+		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
 	}
 	if p.OrderID != "" {

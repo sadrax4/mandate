@@ -336,3 +336,26 @@ func TestWebhookCapturesApprovedOrder(t *testing.T) {
 		t.Fatalf("unknown order webhook: %d", resp.StatusCode)
 	}
 }
+
+func TestMissionRateLimit(t *testing.T) {
+	st, _ := store.Open("")
+	cat := catalog.NewMock()
+	shopper := agent.NewShopper(agent.Fake{}, cat, st)
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Start()
+	defer ts.Close()
+	srv := New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", MaxMissionsPerHour: 2}, st, paypal.NewMock(ts.URL), shopper, cat)
+	ts.Config.Handler = srv.Handler()
+	e := &env{t: t, ts: ts, st: st, cli: &http.Client{}}
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "x", "total_budget": 100}, &md)
+	var out map[string]any
+	for i := 0; i < 2; i++ {
+		if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress"}, &out); code != 201 {
+			t.Fatalf("mission %d: %d %v", i, code, out)
+		}
+	}
+	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress"}, &out); code != 429 {
+		t.Fatalf("expected 429, got %d", code)
+	}
+}

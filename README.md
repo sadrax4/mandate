@@ -76,6 +76,7 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `DATA_FILE` | `data/mandate.json` | JSON persistence; empty keeps everything in memory |
 | `STATIC_DIR` | `web/dist` | Built UI |
 | `CURRENCY` | `USD` | Default mandate currency |
+| `MAX_MISSIONS_PER_HOUR` | `40` | Server-wide cap on agent runs per hour, so a public demo cannot drain the model budget (`0` = unlimited) |
 
 The server also reads a `.env` file in the working directory.
 

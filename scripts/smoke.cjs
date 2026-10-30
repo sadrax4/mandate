@@ -49,6 +49,13 @@ await page.waitForSelector('text=Earlier proposals', { timeout: 20000 })
 await page.waitForTimeout(800)
 await page.screenshot({ path: `${S}/06-mission-after-reject.png`, fullPage: true })
 
+// spending insights: charts and the purchased-items grid
+await page.goto(base + '/#/insights')
+await page.waitForSelector('text=Spending insights')
+await page.waitForSelector('.ag-row', { timeout: 10000 })
+await page.waitForTimeout(1200)
+await page.screenshot({ path: `${S}/09-insights.png`, fullPage: true })
+
 await page.goto(base + '/#/mandates/new')
 await page.waitForSelector('text=New mandate')
 await page.screenshot({ path: `${S}/07-new-mandate.png`, fullPage: true })

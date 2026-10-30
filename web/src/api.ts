@@ -135,6 +135,37 @@ export type Config = {
   paypal_mcp?: { enabled: boolean; tools: string[]; available?: number; error?: string; url?: string; checking?: boolean }
 }
 
+export type InsightItem = {
+  order_id: string
+  capture_id?: string
+  mission_id: string
+  mandate: string
+  goal: string
+  product: string
+  product_id: string
+  merchant: string
+  category: string
+  unit_price: number
+  quantity: number
+  line_total: number
+  currency: string
+  status: string
+  paid_via: string
+  payer?: string
+  mode: string
+  created_at: string
+}
+export type InsightBucket = { key: string; amount: number; count: number }
+export type Insights = {
+  currency: string
+  totals: { captured: number; orders: number; items: number; mandates: number; average_order: number }
+  mandates: { id: string; name: string; currency: string; budget: number; spent: number; reserved: number; remaining: number; orders: number; items: number; saved_paypal: boolean }[]
+  by_category: InsightBucket[]
+  by_merchant: InsightBucket[]
+  by_day: InsightBucket[]
+  items: InsightItem[]
+}
+
 export type AskEvent = { type: string; message: string; data?: any }
 export type AskResult = { answer: string; tools_used: string[]; events: AskEvent[]; warning?: string }
 
@@ -161,6 +192,7 @@ export const api = {
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
   createMission: (mandate_id: string, goal: string) =>
     req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id, goal }) }),
+  insights: () => req<Insights>('/api/insights'),
   ask: (question: string, mandateId?: string) =>
     req<AskResult>('/api/ask', { method: 'POST', body: JSON.stringify({ question, mandate_id: mandateId || '' }) }),
   approve: (proposalId: string) =>

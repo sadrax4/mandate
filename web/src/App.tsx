@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import MandateForm from './pages/MandateForm'
 import MissionPage from './pages/Mission'
 import Ledger from './pages/Ledger'
+import Insights from './pages/Insights'
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash || '#/')
@@ -27,6 +28,7 @@ export default function App() {
   if (path === '/mandates/new') page = <MandateForm />
   else if (path.startsWith('/missions/')) page = <MissionPage id={path.split('/')[2]} params={params} key={path} />
   else if (path === '/ledger') page = <Ledger />
+  else if (path === '/insights') page = <Insights />
   else page = <Dashboard />
 
   const active = (p: string) => (path === p || (p !== '/' && path.startsWith(p)) ? 'active' : '')
@@ -44,6 +46,7 @@ export default function App() {
           <a className={active('/')} href="#/">Dashboard</a>
           <a className={active('/mandates/new')} href="#/mandates/new">New mandate</a>
           <a className={active('/ledger')} href="#/ledger">Ledger</a>
+          <a className={active('/insights')} href="#/insights">Insights</a>
         </nav>
         {config && (
           <div className="modes" title="Runtime configuration">

@@ -7,7 +7,7 @@ const dark = themeQuartz
   .withPart(colorSchemeDark)
   .withParams({ accentColor: '#2dd4bf', borderRadius: 8, wrapperBorderRadius: 12, fontFamily: 'inherit', backgroundColor: '#15181d' })
 
-function usePrefersDark() {
+export function usePrefersDark() {
   const [isDark, setDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')

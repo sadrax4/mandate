@@ -4,7 +4,7 @@ Record on the live server (http://23.27.20.150:8080) so the badges read `PayPal:
 
 | Time | Screen | Say |
 |---|---|---|
-| 0:00–0:15 | Dashboard | "AI agents can shop for you, but nobody wants to hand an AI their wallet. Mandate gives the agent a spending limit it cannot break, and PayPal is the only way money moves." |
+| 0:00–0:15 | Dashboard | "Mandate is an AI shopping agent that can only spend inside the limits you give it, and pays with PayPal. AI agents can shop for you, but nobody wants to hand an AI their wallet; this is the middle ground." |
 | 0:15–0:35 | New mandate form, fill it in | "A mandate is a budget, a per-item cap, allowed categories, blocked merchants, a minimum rating, and whether I approve every cart. I also let it save my PayPal account at the first checkout." Save. |
 | 0:35–1:15 | Start mission, watch activity stream | "I give it a goal in plain language." Type *a mechanical keyboard with brown switches under $120*. "Claude searches real products through Channel3, compares them, and runs every cart through the policy engine. Everything it looked at lands in this grid; every product links to the merchant." Pause on the green checks and the agent's reasons for rejecting alternatives. |
 | 1:15–1:30 | Proposal card | "Here is the proposal: the item, the agent's reason, the total, what is left of the budget, and which rules passed. The agent cannot pay. I can." |
@@ -13,7 +13,7 @@ Record on the live server (http://23.27.20.150:8080) so the badges read `PayPal:
 | 2:10–2:25 | Mission with a goal outside the mandate (prepared earlier) | "If a goal cannot fit, the agent explains why and suggests the smallest change. It cannot change its own mandate; I click Amend and retry." Click it, show the retry starting. |
 | 2:25–2:40 | Dashboard standing orders, then Insights | "A standing order re-runs a goal every month, inside the same limits. Insights shows where the money went, mandate by mandate." |
 | 2:40–2:50 | Ledger, then the Ask panel | "Every order and capture is in the ledger, and the assistant can check them against PayPal itself through PayPal's MCP server, read-only." |
-| 2:50–3:00 | Closing | "Mandate: delegate the shopping, keep the authority. Built on PayPal Orders, vault and MCP, Claude, AG Grid and Channel3." |
+| 2:50–3:00 | Closing | "Mandate: delegate the shopping, keep the authority. Sandbox only today, open source, built on PayPal Orders, vault and MCP, Claude, AG Grid and Channel3." |
 
 Checklist before recording:
 - Clean dashboard: either a fresh server data file or simply create a new mandate on camera.

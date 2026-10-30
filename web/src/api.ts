@@ -198,6 +198,7 @@ export const api = {
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
   createMission: (mandateId: string, goal: string, repeatDays = 0) =>
     req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id: mandateId, goal, repeat_days: repeatDays }) }),
+  forgetPayment: (mandateId: string) => req<Mandate>(`/api/mandates/${mandateId}/forget-payment`, { method: 'POST' }),
   runNow: (missionId: string) => req<Mission>(`/api/missions/${missionId}/run-now`, { method: 'POST' }),
   stopRepeat: (missionId: string) => req<Mission>(`/api/missions/${missionId}/stop-repeat`, { method: 'POST' }),
   insights: () => req<Insights>('/api/insights'),

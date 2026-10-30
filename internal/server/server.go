@@ -109,6 +109,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/mandates", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.st.ListMandates()) })
 	m.HandleFunc("POST /api/mandates", s.handleCreateMandate)
 	m.HandleFunc("GET /api/mandates/{id}", s.handleGetMandate)
+	m.HandleFunc("POST /api/mandates/{id}/forget-payment", s.handleForgetPayment)
 
 	m.HandleFunc("GET /api/missions", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.st.ListMissions(r.URL.Query().Get("mandate_id")))
@@ -189,6 +190,30 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.PutMandate(&in)
 	writeJSON(w, 201, in)
+}
+
+// handleForgetPayment revokes the saved PayPal account on a mandate: the
+// agent loses the ability to pay without a human until a future checkout
+// saves a new one.
+func (s *Server) handleForgetPayment(w http.ResponseWriter, r *http.Request) {
+	s.payMu.Lock()
+	defer s.payMu.Unlock()
+	md, err := s.st.GetMandate(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 404, "mandate not found")
+		return
+	}
+	if !md.HasSavedPayment() {
+		writeErr(w, 409, "no saved PayPal account on this mandate")
+		return
+	}
+	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error { m.VaultID, m.VaultPayer, m.VaultedAt = "", "", nil; return nil })
+	for _, ms := range s.st.ListMissions(md.ID) {
+		s.st.AddEvent(ms.ID, "vault", "the human removed the saved PayPal account from this mandate; future carts go through PayPal checkout", nil)
+		break
+	}
+	md, _ = s.st.GetMandate(md.ID)
+	writeJSON(w, 200, md)
 }
 
 func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {

@@ -52,7 +52,7 @@ export default function MandateForm() {
       <div className="page-head">
         <div>
           <h1>New mandate</h1>
-          <p className="lede">Everything the agent proposes is checked against these rules before a human sees it, and again at approval time.</p>
+          <p className="lede">Everything the agent proposes is checked against these rules before a human sees it, and again at approval time. In the words of PayPal&apos;s Agent Payments Protocol this is an <b>intent mandate</b>: the conditions under which the agent may act when you are not present. Every cart you approve by hand is a <b>cart mandate</b>.</p>
         </div>
       </div>
       <form onSubmit={submit}>

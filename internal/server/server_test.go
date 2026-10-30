@@ -838,3 +838,30 @@ func TestStandingOrderRunsNowAndOnSchedule(t *testing.T) {
 		t.Fatalf("run-now after stop: %d", code)
 	}
 }
+
+func TestForgetSavedPaymentRevokesOneClick(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	if e.mandateVault(mdID) == "" {
+		t.Fatal("account not saved")
+	}
+	var out map[string]any
+	if code := e.post("/api/mandates/"+mdID+"/forget-payment", nil, &out); code != 200 || out["vault_id"] != nil {
+		t.Fatalf("forget: %d %v", code, out)
+	}
+	if code := e.post("/api/mandates/"+mdID+"/forget-payment", nil, &out); code != 409 {
+		t.Fatalf("second forget: %d", code)
+	}
+	_, pid2 := e.pendingProposal(mdID)
+	e.post("/api/proposals/"+pid2+"/approve", nil, &ap)
+	if ap["approve_url"] == "" {
+		t.Fatal("expected a checkout after forgetting the saved account")
+	}
+}

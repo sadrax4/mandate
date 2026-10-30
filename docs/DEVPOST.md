@@ -11,7 +11,7 @@ An AI shopping agent that researches, compares and checks out with PayPal, but o
 ## About the project
 
 ### Inspiration
-Agentic commerce has a trust problem. Either the agent holds your wallet, or you do every checkout yourself. We wanted the middle: delegate a purchase the way you would to an assistant, with a *mandate* ("$250, nothing over $120, only computers and office gear, nothing from that merchant, rating 4.3+, ask me before paying") that is enforced in code rather than in a prompt. PayPal's own guidance for agent builders says to keep human oversight where judgment matters most; Mandate is that oversight, made into a product.
+Agentic commerce has a trust problem. Either the agent holds your wallet, or you do every checkout yourself. We wanted the middle: delegate a purchase the way you would to an assistant, with a *mandate* ("$250, nothing over $120, only computers and office gear, nothing from that merchant, rating 4.3+, ask me before paying") that is enforced in code rather than in a prompt. PayPal's own guidance for agent builders says to keep human oversight where judgment matters most; Mandate is that oversight, made into a product. It is also PayPal's Agent Payments Protocol in product form: the mandate is the *intent mandate* (human not present: budget, categories, timing), every cart you approve is a *cart mandate* (human present), and the PayPal order or vault payment is the payment credential tied to one proposal.
 
 ### What it does
 - You create a **mandate**: budget, per-item cap, auto-approve threshold, allowed categories, blocked merchants, minimum rating.
@@ -34,6 +34,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 ### Challenges we ran into
 - Making the agent *safe by construction*: the agent has no payment tool at all; payment is a server-side consequence of a human decision, and the policy engine re-runs at approval time because budgets move.
 - Money accounting that survives real-world mess: budget reservations on order creation, release on cancel, void or refund, capture-on-return with an `ORDER_ALREADY_CAPTURED` guard, serialised money transitions, and a reconciliation endpoint for buyers who approve but never come back.
+- Treating the catalog as hostile: product titles and descriptions are third-party text, so the agent is told to treat instructions inside them as noise, and even a hijacked agent can only propose. The README has the full threat model.
 - Giving the agent *more* PayPal reach without more power: the order assistant reads PayPal through its MCP server, but the mutating tools (create, pay, refund, accept dispute) are disabled in the toolset, and the assistant falls back to the ledger when PayPal's sandbox MCP has a bad day.
 - Keeping the demo honest: everything judges see in mock mode is the same code path as sandbox mode behind an interface.
 

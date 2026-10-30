@@ -104,6 +104,31 @@ export default function Dashboard() {
         </div>
       )}
 
+      {missions.some((ms) => ms.status === 'awaiting_approval') && (
+        <Card title="Needs your approval" className="mt-0" action={<span className="muted">the agent proposed; nothing moves until you decide</span>}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Goal</th>
+                <th>Mandate</th>
+                <th>Proposed</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {missions.filter((ms) => ms.status === 'awaiting_approval').map((ms) => (
+                <tr key={ms.id}>
+                  <td>{ms.goal}</td>
+                  <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
+                  <td className="muted">{new Date(ms.updated_at).toLocaleString()}</td>
+                  <td><a className="btn primary sm" href={`#/missions/${ms.id}`}>Review &amp; approve</a></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
       {mandates.length === 0 ? (
         <Empty>No mandates yet. Create one, or use the demo mandate to see the whole flow in a minute.</Empty>
       ) : (
@@ -223,7 +248,10 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
         {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
         {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
         {m.vault_id ? (
-          <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
+          <>
+            <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
+            <ForgetButton mandate={m} onChanged={onStarted} />
+          </>
         ) : m.save_payment_method ? (
           <Chip>saves PayPal at the first checkout</Chip>
         ) : null}
@@ -274,5 +302,24 @@ export function StandingOrderButtons({ mission, onChanged }: { mission: Mission;
       <button className="btn ghost sm" onClick={() => act('stop')} disabled={busy !== ''}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
       {err && <span className="alert bad" style={{ padding: '2px 8px' }}>{err}</span>}
     </span>
+  )
+}
+
+function ForgetButton({ mandate: m, onChanged }: { mandate: Mandate; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const forget = async () => {
+    if (!window.confirm('Forget the PayPal account saved on this mandate? Future carts go through PayPal checkout again.')) return
+    setBusy(true)
+    try {
+      await api.forgetPayment(m.id)
+      onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button type="button" className="link" onClick={forget} disabled={busy} title="Revoke: the agent loses the ability to pay without you">
+      {busy ? 'Forgetting…' : 'forget saved PayPal'}
+    </button>
   )
 }

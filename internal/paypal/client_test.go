@@ -129,3 +129,49 @@ func TestMock(t *testing.T) {
 		t.Fatalf("capture: %v %+v", err, c)
 	}
 }
+
+func TestVerifyWebhook(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/oauth2/token":
+			_, _ = io.WriteString(w, `{"access_token":"t","expires_in":3600}`)
+		case "/v1/notifications/verify-webhook-signature":
+			body, _ := io.ReadAll(r.Body)
+			var m map[string]any
+			_ = json.Unmarshal(body, &m)
+			if m["webhook_id"] != "WH-ID" || m["transmission_id"] != "tid" || m["webhook_event"] == nil {
+				http.Error(w, "bad verify request: "+string(body), 400)
+				return
+			}
+			_, _ = io.WriteString(w, `{"verification_status":"SUCCESS"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewREST("a", "b", srv.URL)
+	h := http.Header{}
+	h.Set("Paypal-Transmission-Id", "tid")
+	h.Set("Paypal-Transmission-Sig", "sig")
+	h.Set("Paypal-Cert-Url", "https://api.sandbox.paypal.com/cert")
+	h.Set("Paypal-Auth-Algo", "SHA256withRSA")
+	h.Set("Paypal-Transmission-Time", "2026-10-30T12:00:00Z")
+	ok, err := c.VerifyWebhook(context.Background(), "WH-ID", h, []byte(`{"id":"WH-1","event_type":"CHECKOUT.ORDER.APPROVED"}`))
+	if err != nil || !ok {
+		t.Fatalf("verify: ok=%v err=%v", ok, err)
+	}
+	if _, err := c.VerifyWebhook(context.Background(), "", h, nil); err == nil {
+		t.Fatal("expected error without webhook id")
+	}
+	ev := WebhookEvent{EventType: "PAYMENT.CAPTURE.COMPLETED", ResourceType: "capture"}
+	ev.Resource.ID = "CAP1"
+	ev.Resource.SupplementaryData.RelatedIDs.OrderID = "ORD1"
+	if ev.OrderID() != "ORD1" {
+		t.Fatalf("capture event order id = %q", ev.OrderID())
+	}
+	ev2 := WebhookEvent{EventType: "CHECKOUT.ORDER.APPROVED", ResourceType: "checkout-order"}
+	ev2.Resource.ID = "ORD2"
+	if ev2.OrderID() != "ORD2" {
+		t.Fatalf("order event order id = %q", ev2.OrderID())
+	}
+}

@@ -3,6 +3,7 @@ package paypal
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,13 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 	o.CaptureID = "CAP" + o.ID[4:]
 	out := o.Order
 	return &out, nil
+}
+
+// VerifyWebhook implements Client. The simulator accepts deliveries that carry
+// the shared secret "mock" in the Paypal-Transmission-Sig header, which is what
+// the tests send.
+func (m *Mock) VerifyWebhook(_ context.Context, _ string, h http.Header, _ []byte) (bool, error) {
+	return h.Get("Paypal-Transmission-Sig") == "mock", nil
 }
 
 // GetOrder implements Client.

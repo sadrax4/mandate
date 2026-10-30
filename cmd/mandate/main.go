@@ -106,7 +106,7 @@ func main() {
 	}
 
 	shopper := agent.NewShopper(provider, cat, st)
-	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version}, st, pp, shopper, cat)
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID")}, st, pp, shopper, cat)
 
 	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

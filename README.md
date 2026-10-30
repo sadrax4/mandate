@@ -63,6 +63,7 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 |---|---|---|
 | `PAYPAL_MODE` | `sandbox` if a client ID is set, else `mock` | `sandbox`, `live` or `mock` (built-in checkout simulator) |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | | REST app credentials |
+| `PAYPAL_WEBHOOK_ID` | | Optional webhook ID; enables signature verification for `/paypal/webhook` |
 | `LLM_PROVIDER` | `anthropic` if a key is set, else `fake` | `anthropic` or `fake` (scripted agent for tests and demos) |
 | `ANTHROPIC_API_KEY` | | Claude API key from the Anthropic Console |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | | Optional: an Anthropic-compatible gateway and bearer token, e.g. `https://openrouter.ai/api` with an OpenRouter key and `ANTHROPIC_MODEL=anthropic/claude-opus-5.5`. Anthropic-only extras (refusal fallback, effort) are skipped automatically |
@@ -86,7 +87,8 @@ All PayPal code lives in `internal/paypal` and uses the REST API directly from G
 - **Create order** (`POST /v2/checkout/orders`) with `intent=CAPTURE`, a purchase unit carrying the mandate's currency, the exact cart as `items` with an `item_total` breakdown, `custom_id` set to our proposal ID, and `payment_source.paypal.experience_context` (`PAY_NOW`, no shipping, return and cancel URLs). The proposal ID doubles as the `PayPal-Request-Id` idempotency key, so a double click can never create two orders.
 - **Buyer approval** through the `payer-action` link PayPal returns; the buyer logs in and approves on PayPal, not in our app.
 - **Capture** (`POST /v2/checkout/orders/{id}/capture`) when PayPal sends the buyer back to `/paypal/return`. `ORDER_ALREADY_CAPTURED` is treated as success so a refreshed return page is harmless.
-- **Reconciliation** (`GET /v2/checkout/orders/{id}`) behind *Check status with PayPal*: if the buyer approved but the redirect never arrived, the order is captured; if PayPal already shows it completed, the ledger is updated. (A production deployment would do this from `CHECKOUT.ORDER.APPROVED` / `PAYMENT.CAPTURE.COMPLETED` webhooks.)
+- **Reconciliation** (`GET /v2/checkout/orders/{id}`) behind *Check status with PayPal*: if the buyer approved but the redirect never arrived, the order is captured; if PayPal already shows it completed, the ledger is updated.
+- **Webhooks** (`POST /paypal/webhook`): every delivery is verified with `POST /v1/notifications/verify-webhook-signature` before it is trusted. `CHECKOUT.ORDER.APPROVED` captures the order even if the buyer closed the tab; `PAYMENT.CAPTURE.COMPLETED` reconciles the ledger; denied/refunded/reversed captures update the payment status. Handling is idempotent, so PayPal retries never double-count a spend. Configure a webhook for `<PUBLIC_URL>/paypal/webhook` in the Developer Dashboard and set `PAYPAL_WEBHOOK_ID`.
 - **Cancel** (`/paypal/cancel`) releases the budget reservation.
 
 Budget accounting is explicit: creating an order moves the amount into *reserved*; a capture moves it to *spent*; a cancel releases it. The mandate re-evaluates the cart at approval time, so a proposal that was fine an hour ago cannot be paid if other missions have used the budget since.
@@ -162,6 +164,7 @@ docs/screenshots/       what the judges see
 | `GET` | `/api/ledger` | All orders with mission and mandate context |
 | `GET` | `/api/products/search` | Direct catalog search (`q`, `max_price`, `category`) |
 | `GET` | `/paypal/return`, `/paypal/cancel` | PayPal redirect targets |
+| `POST` | `/paypal/webhook` | Verified PayPal webhook deliveries (approve → capture, capture → reconcile) |
 
 ## Testing
 
@@ -184,7 +187,7 @@ docker build -t mandate . && docker run --rm -p 8080:8080 --env-file .env mandat
 ## Sponsor tools used
 
 - **PayPal**: Orders v2 (create, capture, get), OAuth2, sandbox checkout. Central to the product: it is the only way money moves.
-- **AG Grid** (Community): the products-considered grid, the proposal item grid and the ledger (sorting, filtering, pagination, themed for light and dark mode via the Theming API).
+- **AG Grid** (Community): the products-considered grid, the proposal item grid and the ledger (sorting, filtering, pagination, CSV export, themed for light and dark mode via the Theming API).
 - **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`).
 - **Render**: `render.yaml` and Docker image for one-click deployment.
 
@@ -195,11 +198,10 @@ docker build -t mandate . && docker run --rm -p 8080:8080 --env-file .env mandat
 - Orders are idempotent per proposal; budget is reserved before checkout and released on cancel.
 - Persistence is a JSON file: intentional for a hackathon, trivial to swap for Postgres behind `internal/store`.
 - The Channel3 client decodes the documented response shapes defensively; if the schema changes, `CATALOG=mock` keeps the demo working.
-- Not production-ready for real money without webhooks, authentication and a database.
+- Not production-ready for real money without authentication and a database.
 
 ## What's next
 
-- PayPal webhooks for capture confirmation instead of relying on the return redirect.
 - Vaulted payment methods / reference transactions so sub-threshold purchases can complete without a checkout hop, still inside the mandate.
 - Multi-currency mandates and Pay Later options at checkout.
 - PayPal Agent Toolkit / MCP server as a second tool surface for invoices and disputes.

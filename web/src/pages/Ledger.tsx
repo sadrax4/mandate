@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { ColDef } from 'ag-grid-community'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ColDef, GridApi } from 'ag-grid-community'
 import { api, label, money, type LedgerRow } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Empty, navigate } from '../components/ui'
@@ -7,6 +7,7 @@ import { Card, Empty, navigate } from '../components/ui'
 export default function Ledger() {
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [err, setErr] = useState('')
+  const gridApi = useRef<GridApi<LedgerRow> | null>(null)
   useEffect(() => {
     api.ledger().then(setRows).catch((e) => setErr(e.message))
   }, [])
@@ -52,7 +53,16 @@ export default function Ledger() {
         <div className="stat"><b>{money(totals.pending)}</b><span>awaiting buyer</span></div>
       </div>
       {err && <div className="alert bad">{err}</div>}
-      <Card>
+      <Card
+        title="Orders"
+        action={
+          rows.length > 0 ? (
+            <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-ledger.csv' })}>
+              Export CSV
+            </button>
+          ) : undefined
+        }
+      >
         {rows.length === 0 ? (
           <Empty>No payments yet. Approve a proposal and complete PayPal checkout to see it here.</Empty>
         ) : (
@@ -60,6 +70,9 @@ export default function Ledger() {
             rowData={rows}
             columnDefs={cols}
             getRowId={(p) => p.data.id}
+            onGridReady={(e) => {
+              gridApi.current = e.api
+            }}
             onRowClicked={(e) => e.data && navigate(`#/missions/${e.data.mission_id}`)}
             rowClass="row-link"
             pagination={rows.length > 25}

@@ -62,7 +62,44 @@ type Client interface {
 	CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error)
 	CaptureOrder(ctx context.Context, orderID string) (*Order, error)
 	GetOrder(ctx context.Context, orderID string) (*Order, error)
+	// VerifyWebhook checks a webhook delivery's signature with PayPal
+	// (POST /v1/notifications/verify-webhook-signature). webhookID is the ID
+	// of the webhook configured in the Developer Dashboard.
+	VerifyWebhook(ctx context.Context, webhookID string, headers http.Header, body []byte) (bool, error)
 	Mode() string // "sandbox", "live" or "mock"
+}
+
+// WebhookEvent is the subset of a PayPal webhook payload Mandate acts on.
+type WebhookEvent struct {
+	ID           string `json:"id"`
+	EventType    string `json:"event_type"`
+	ResourceType string `json:"resource_type"`
+	Resource     struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Amount struct {
+			CurrencyCode string `json:"currency_code"`
+			Value        string `json:"value"`
+		} `json:"amount"`
+		CustomID          string `json:"custom_id"`
+		SupplementaryData struct {
+			RelatedIDs struct {
+				OrderID string `json:"order_id"`
+			} `json:"related_ids"`
+		} `json:"supplementary_data"`
+	} `json:"resource"`
+}
+
+// OrderID returns the checkout order an event refers to, for both order
+// events (resource is the order) and capture events (resource is the capture).
+func (e WebhookEvent) OrderID() string {
+	if e.Resource.SupplementaryData.RelatedIDs.OrderID != "" {
+		return e.Resource.SupplementaryData.RelatedIDs.OrderID
+	}
+	if e.ResourceType == "checkout-order" || strings.HasPrefix(e.EventType, "CHECKOUT.ORDER.") {
+		return e.Resource.ID
+	}
+	return ""
 }
 
 // APIError carries the PayPal error payload.
@@ -262,6 +299,34 @@ func (r *REST) CaptureOrder(ctx context.Context, orderID string) (*Order, error)
 		return nil, err
 	}
 	return parseOrder(raw)
+}
+
+// VerifyWebhook implements Client.
+func (r *REST) VerifyWebhook(ctx context.Context, webhookID string, h http.Header, body []byte) (bool, error) {
+	if webhookID == "" {
+		return false, errors.New("paypal: PAYPAL_WEBHOOK_ID is not configured")
+	}
+	var event json.RawMessage = body
+	req := map[string]any{
+		"auth_algo":         h.Get("Paypal-Auth-Algo"),
+		"cert_url":          h.Get("Paypal-Cert-Url"),
+		"transmission_id":   h.Get("Paypal-Transmission-Id"),
+		"transmission_sig":  h.Get("Paypal-Transmission-Sig"),
+		"transmission_time": h.Get("Paypal-Transmission-Time"),
+		"webhook_id":        webhookID,
+		"webhook_event":     event,
+	}
+	raw, _, err := r.do(ctx, http.MethodPost, "/v1/notifications/verify-webhook-signature", req, "")
+	if err != nil {
+		return false, err
+	}
+	var out struct {
+		VerificationStatus string `json:"verification_status"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, err
+	}
+	return out.VerificationStatus == "SUCCESS", nil
 }
 
 // GetOrder implements Client using GET /v2/checkout/orders/{id}.

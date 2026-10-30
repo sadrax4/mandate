@@ -32,6 +32,8 @@ type Config struct {
 	StaticDir string
 	Currency  string
 	Version   string
+	// WebhookID is the PayPal webhook ID used to verify deliveries to /paypal/webhook.
+	WebhookID string
 }
 
 // Server is the HTTP layer.
@@ -94,6 +96,7 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /paypal/return", s.handlePayPalReturn)
 	m.HandleFunc("GET /paypal/cancel", s.handlePayPalCancel)
+	m.HandleFunc("POST /paypal/webhook", s.handlePayPalWebhook)
 
 	if s.ppMock != nil {
 		m.HandleFunc("GET /mock/paypal/approve", s.handleMockApprovePage)
@@ -419,8 +422,13 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pay)
 }
 
-// markPaid records a completed capture everywhere it matters.
+// markPaid records a completed capture everywhere it matters. It is
+// idempotent: the return redirect, the sync endpoint and a webhook can all
+// report the same capture.
 func (s *Server) markPaid(pay *store.Payment, order *paypal.Order) {
+	if cur, err := s.st.GetPayment(pay.ID); err == nil && cur.Status == "COMPLETED" {
+		return
+	}
 	amount := order.Amount
 	if amount == 0 {
 		amount = pay.Amount
@@ -507,6 +515,66 @@ func (s *Server) handlePayPalCancel(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionCancelled })
 	s.st.AddEvent(pay.MissionID, "cancelled", "buyer cancelled at PayPal checkout; reservation released", map[string]any{"order_id": pay.ID})
 	http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=cancelled", http.StatusFound)
+}
+
+// handlePayPalWebhook receives PayPal webhook deliveries. Every delivery is
+// verified with PayPal before it is trusted. CHECKOUT.ORDER.APPROVED captures
+// the order (the buyer approved but may never have reached the return URL);
+// PAYMENT.CAPTURE.COMPLETED reconciles the ledger if the capture happened
+// elsewhere. Unknown orders and other event types are acknowledged and ignored
+// so PayPal does not retry them.
+func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, 400, "unreadable body")
+		return
+	}
+	ok, err := s.pp.VerifyWebhook(r.Context(), s.cfg.WebhookID, r.Header, body)
+	if err != nil {
+		log.Printf("webhook verification error: %v", err)
+		writeErr(w, 502, "verification failed")
+		return
+	}
+	if !ok {
+		writeErr(w, 401, "invalid webhook signature")
+		return
+	}
+	var ev paypal.WebhookEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		writeErr(w, 400, "invalid event")
+		return
+	}
+	orderID := ev.OrderID()
+	pay, perr := s.st.GetPayment(orderID)
+	if orderID == "" || perr != nil {
+		writeJSON(w, 200, map[string]any{"ok": true, "ignored": "unknown order"})
+		return
+	}
+	s.st.AddEvent(pay.MissionID, "webhook", "PayPal webhook "+ev.EventType+" for order "+orderID, map[string]any{"event_id": ev.ID, "event_type": ev.EventType})
+	switch ev.EventType {
+	case "CHECKOUT.ORDER.APPROVED":
+		if pay.Status != "COMPLETED" {
+			order, err := s.pp.CaptureOrder(r.Context(), orderID)
+			if err != nil {
+				s.st.AddEvent(pay.MissionID, "error", "capture after webhook failed: "+err.Error(), nil)
+				writeErr(w, 502, "capture failed")
+				return
+			}
+			if order.Status == "COMPLETED" {
+				s.markPaid(pay, order)
+			}
+		}
+	case "PAYMENT.CAPTURE.COMPLETED":
+		if pay.Status != "COMPLETED" {
+			order, err := s.pp.GetOrder(r.Context(), orderID)
+			if err == nil && order.Status == "COMPLETED" {
+				s.markPaid(pay, order)
+			}
+		}
+	case "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED":
+		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = strings.TrimPrefix(ev.EventType, "PAYMENT.CAPTURE.") })
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // --- mock PayPal approval simulator ---

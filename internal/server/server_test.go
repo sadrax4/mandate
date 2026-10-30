@@ -277,3 +277,62 @@ func TestSyncCapturesApprovedOrder(t *testing.T) {
 		t.Fatalf("expected 404, got %d", code)
 	}
 }
+
+func TestWebhookCapturesApprovedOrder(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Petty cash", "total_budget": 100, "auto_approve_under": 60}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingPayment)
+	orderID := out["payments"].([]any)[0].(map[string]any)["id"].(string)
+	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {orderID}, "action": {"approve"}})
+	r.Body.Close()
+
+	event := fmt.Sprintf(`{"id":"WH-1","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":%q,"status":"APPROVED"}}`, orderID)
+	req, _ := http.NewRequest(http.MethodPost, e.ts.URL+"/paypal/webhook", strings.NewReader(event))
+	req.Header.Set("Content-Type", "application/json")
+	// unsigned delivery is rejected
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("unsigned webhook: %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodPost, e.ts.URL+"/paypal/webhook", strings.NewReader(event))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, err = e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("signed webhook: %d", resp.StatusCode)
+	}
+	out = e.waitMission(ms["id"].(string), store.MissionPaid)
+	pay := out["payments"].([]any)[0].(map[string]any)
+	if pay["status"] != "COMPLETED" || pay["capture_id"] == "" {
+		t.Fatalf("webhook did not capture: %v", pay)
+	}
+	// a second delivery (PayPal retries) must not double-count the spend
+	capEvent := fmt.Sprintf(`{"id":"WH-2","event_type":"PAYMENT.CAPTURE.COMPLETED","resource_type":"capture","resource":{"id":"CAPX","status":"COMPLETED","supplementary_data":{"related_ids":{"order_id":%q}}}}`, orderID)
+	req, _ = http.NewRequest(http.MethodPost, e.ts.URL+"/paypal/webhook", strings.NewReader(capEvent))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, _ = e.cli.Do(req)
+	resp.Body.Close()
+	var mdv map[string]any
+	e.get("/api/mandates/"+md["id"].(string), &mdv)
+	if spent := mdv["mandate"].(map[string]any)["spent"].(float64); spent != pay["amount"].(float64) {
+		t.Fatalf("spend double-counted: %v", spent)
+	}
+	// unknown orders are acknowledged, not retried
+	req, _ = http.NewRequest(http.MethodPost, e.ts.URL+"/paypal/webhook", strings.NewReader(`{"id":"WH-3","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"NOPE"}}`))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, _ = e.cli.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("unknown order webhook: %d", resp.StatusCode)
+	}
+}

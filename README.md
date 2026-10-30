@@ -41,6 +41,7 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
 | ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after payment |
 | ![Spending insights](docs/screenshots/insights.png) Spending insights: AG Charts over the ledger, AG Grid of every item bought | ![Suggestion](docs/screenshots/suggestion.png) A goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries |
+| ![One-click payment](docs/screenshots/one-click-paid.png) Second purchase on a mandate with a saved PayPal account: approved and captured with one click, no checkout | ![Standing orders](docs/screenshots/standing-orders.png) Standing orders on the dashboard: the goal re-runs on schedule, inside the mandate, with Run now and Stop |
 
 Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)). The first four screenshots were taken in offline demo mode (note the `mock` badges); the last two on the live sandbox deployment.
 

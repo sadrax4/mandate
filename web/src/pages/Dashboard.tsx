@@ -183,8 +183,8 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
         ) : null}
       </div>
       <form className="goal-form" onSubmit={start}>
-        <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the agent buy? e.g. a 27-inch 4K USB-C monitor" />
-        <select value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} title="Standing order: run this goal again on a schedule, inside the same mandate">
+        <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the agent buy? e.g. a 27-inch 4K USB-C monitor" aria-label={`Goal for the agent under ${m.name}`} />
+        <select value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} aria-label="Repeat schedule" title="Standing order: run this goal again on a schedule, inside the same mandate">
           {REPEAT_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
         </select>
         <button className="btn primary" disabled={busy || !goal.trim()}>{busy ? 'Starting…' : 'Start mission'}</button>

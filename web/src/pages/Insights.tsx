@@ -148,7 +148,7 @@ export default function InsightsPage() {
         action={
           data.items.length > 0 ? (
             <div className="toolbar">
-              <input value={quick} onChange={(e) => { setQuick(e.target.value); gridApi.current?.setGridOption('quickFilterText', e.target.value) }} placeholder="Quick filter: product, merchant, mandate…" />
+              <input value={quick} onChange={(e) => { setQuick(e.target.value); gridApi.current?.setGridOption('quickFilterText', e.target.value) }} placeholder="Quick filter: product, merchant, mandate…" aria-label="Quick filter for purchased items" />
               <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-items.csv' })}>Export CSV</button>
             </div>
           ) : undefined

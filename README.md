@@ -1,5 +1,11 @@
 # Mandate
 
+[![CI](https://github.com/sadrax4/mandate/actions/workflows/ci.yml/badge.svg)](https://github.com/sadrax4/mandate/actions/workflows/ci.yml)
+[![Release](https://github.com/sadrax4/mandate/actions/workflows/release.yml/badge.svg)](https://github.com/sadrax4/mandate/releases/tag/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0d9488.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
+[![PayPal sandbox](https://img.shields.io/badge/PayPal-Orders%20v2%20%C2%B7%20vault%20%C2%B7%20webhooks%20%C2%B7%20MCP-003087?logo=paypal&logoColor=white)](#paypal-integration)
+
 **An AI shopping agent that can only spend inside the mandate you give it, and pays with PayPal.**
 
 You give the agent a *mandate*: a budget, a per-item cap, allowed categories, blocked merchants, a minimum rating and an approval threshold. You give it a *mission*: "a mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120". The agent researches the catalog, compares candidates, checks every cart against the mandate, and proposes. Nothing moves until a human approves the proposal and completes PayPal checkout. Every order lands in an auditable ledger.
@@ -12,6 +18,15 @@ To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-
 ![Live sandbox run: real Channel3 product, Claude reasoning, PayPal order captured](docs/screenshots/live-mission-paid.png)
 
 *A real run on the live demo: the agent searched Channel3, picked a Keychron keyboard from bestbuy.com, explained what it rejected and why, and the PayPal sandbox order was captured after human approval.*
+
+## Who it is for
+
+- **People who delegate.** Anyone who would hand a trusted assistant a budget and a list: "replace my broken headphones, under $150, not from that store". Mandate lets an agent do the legwork while the human keeps the decision and the wallet.
+- **Households and teams with a shared budget.** One mandate per purpose (office, kitchen, kids' school supplies), each with its own cap and rules, each auditable in one ledger.
+- **Small businesses buying supplies.** Policy, not trust, limits what gets bought: categories, caps, blocked vendors, a threshold above which a person signs off. Standing orders cover the recurring stuff.
+- **Anyone shipping an agent that touches money.** The pattern (mandate → agent proposes → policy engine checks → human approves or a saved PayPal account pays under a threshold → ledger) is the missing control layer for agentic commerce, and the whole thing is open source.
+
+The worst case is bounded by design: a runaway or manipulated agent can propose, but it cannot exceed the per-item cap, the budget, or the categories, and it cannot pay. On the public demo even the number of agent runs per hour is capped.
 
 ## Why
 

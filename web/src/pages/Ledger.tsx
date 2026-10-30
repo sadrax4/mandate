@@ -120,7 +120,7 @@ export default function Ledger() {
             invoices). It can look, never pay: only the tools that read data are enabled.
           </p>
           <form className="goal-form" onSubmit={ask}>
-            <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. Did my last order get captured? What did I spend this week?" maxLength={600} />
+            <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. Did my last order get captured? What did I spend this week?" maxLength={600} aria-label="Question for the order assistant" />
             <button className="btn primary" disabled={asking || !question.trim()}>{asking ? 'Asking PayPal…' : 'Ask'}</button>
           </form>
           <div className="suggestions">

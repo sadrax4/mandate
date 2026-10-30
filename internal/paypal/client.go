@@ -306,11 +306,13 @@ func (r *REST) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order,
 		}
 	} else {
 		source["experience_context"] = map[string]any{
-			"brand_name":          brand,
-			"user_action":         "PAY_NOW",
-			"shipping_preference": "NO_SHIPPING",
-			"return_url":          req.ReturnURL,
-			"cancel_url":          req.CancelURL,
+			"brand_name":                brand,
+			"user_action":               "PAY_NOW",
+			"shipping_preference":       "NO_SHIPPING",
+			"landing_page":              "LOGIN",
+			"payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED", // no pending e-check payments; the capture is final
+			"return_url":                req.ReturnURL,
+			"cancel_url":                req.CancelURL,
 		}
 		if req.StoreInVault {
 			source["attributes"] = map[string]any{

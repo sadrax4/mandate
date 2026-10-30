@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Channel3 searches real products through the Channel3 product search API
@@ -22,10 +23,11 @@ import (
 // cheapest in-stock offer; the number of alternative offers is kept in the
 // attributes so the agent can mention them.
 type Channel3 struct {
-	APIKey  string
-	BaseURL string
-	HTTP    *http.Client
-	Country string // ISO 3166-1 alpha-2, default US
+	APIKey   string
+	BaseURL  string
+	HTTP     *http.Client
+	Country  string // ISO 3166-1 alpha-2, default US
+	Currency string // ISO 4217 used when a query does not say, default USD
 }
 
 // NewChannel3 builds a client. baseURL may be empty to use the public API.
@@ -33,7 +35,7 @@ func NewChannel3(apiKey, baseURL string) *Channel3 {
 	if baseURL == "" {
 		baseURL = "https://api.trychannel3.com"
 	}
-	return &Channel3{APIKey: apiKey, BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 25 * time.Second}, Country: "US"}
+	return &Channel3{APIKey: apiKey, BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 25 * time.Second}, Country: "US", Currency: "USD"}
 }
 
 // Name implements Searcher.
@@ -125,7 +127,7 @@ func (c *Channel3) Search(ctx context.Context, q Query) ([]Product, error) {
 	}
 	cur := strings.ToUpper(q.Currency)
 	if cur == "" {
-		cur = "USD"
+		cur = c.Currency
 	}
 	req := c3SearchRequest{
 		Query:   q.Text,
@@ -164,7 +166,7 @@ func (c *Channel3) Search(ctx context.Context, q Query) ([]Product, error) {
 
 // Get implements Searcher using GET /v1/products/{id}.
 func (c *Channel3) Get(ctx context.Context, id string) (*Product, error) {
-	path := "/v1/products/" + url.PathEscape(id) + "?country=" + url.QueryEscape(c.Country)
+	path := "/v1/products/" + url.PathEscape(id) + "?country=" + url.QueryEscape(c.Country) + "&currency=" + url.QueryEscape(c.Currency)
 	raw, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -173,7 +175,9 @@ func (c *Channel3) Get(ctx context.Context, id string) (*Product, error) {
 	if err := json.Unmarshal(raw, &cp); err != nil {
 		return nil, fmt.Errorf("channel3: decode product: %w", err)
 	}
-	p, ok := c.normalise(cp, "")
+	// Same selection rules as Search (currency, in stock, new), so the cart
+	// item is priced from the offer the agent compared.
+	p, ok := c.normalise(cp, c.Currency)
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -188,20 +192,28 @@ func (c *Channel3) normalise(cp c3Product, wantCurrency string) (Product, bool) 
 	}
 	var best *c3Offer
 	inStock := 0
-	for i := range cp.Offers {
-		o := &cp.Offers[i]
+	usable := func(o *c3Offer) bool {
 		if o.Price.Price <= 0 {
-			continue
+			return false
 		}
 		if wantCurrency != "" && o.Price.Currency != "" && !strings.EqualFold(o.Price.Currency, wantCurrency) {
-			continue
+			return false
 		}
-		if o.Availability != "" && o.Availability != "InStock" {
-			continue
-		}
-		inStock++
-		if best == nil || o.Price.Price < best.Price.Price {
-			best = o
+		return o.Availability == "" || o.Availability == "InStock"
+	}
+	isNew := func(o *c3Offer) bool { return o.Condition == nil || *o.Condition == "" || *o.Condition == "new" }
+	// Prefer new offers; fall back to used only when nothing new is in stock.
+	for pass := 0; pass < 2 && best == nil; pass++ {
+		inStock = 0
+		for i := range cp.Offers {
+			o := &cp.Offers[i]
+			if !usable(o) || (pass == 0 && !isNew(o)) {
+				continue
+			}
+			inStock++
+			if best == nil || o.Price.Price < best.Price.Price {
+				best = o
+			}
 		}
 	}
 	if best == nil {
@@ -331,8 +343,9 @@ func detail(data []byte) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	r := []rune(s)
+	return string(r[:n]) + "…"
 }

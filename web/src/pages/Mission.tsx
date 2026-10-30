@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, RowClassRules } from 'ag-grid-community'
-import { api, label, money, type CartItem, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
+import { api, label, money, type CartItem, type Config, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
 
-const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'message']
+const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'message']
 const CHECK_LABEL: Record<string, string> = {
   within_budget: 'within budget',
   under_per_item_cap: 'under per-item cap',
@@ -15,7 +15,7 @@ const CHECK_LABEL: Record<string, string> = {
 }
 const ICON: Record<string, string> = {
   status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
-  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕',
+  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺',
 }
 
 type Candidate = Product & { query: string }
@@ -27,6 +27,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const [busy, setBusy] = useState('')
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
+  const [config, setConfig] = useState<Config | null>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const statusRef = useRef('')
 
@@ -40,6 +41,10 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         setErr('')
       })
       .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    api.config().then(setConfig).catch(() => {})
+  }, [])
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -76,7 +81,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const proposals = detail?.proposals ?? []
   const latest: Proposal | undefined = proposals[proposals.length - 1]
   const payments = detail?.payments ?? []
-  const payment: Payment | undefined = (latest && payments.find((p) => p.proposal_id === latest.id)) || payments[payments.length - 1]
+  // payments arrive newest-first; prefer the one for the latest proposal
+  const payment: Payment | undefined = (latest && payments.find((p) => p.proposal_id === latest.id)) || payments[0]
   const mission = detail?.mission
   const mandate = detail?.mandate
 
@@ -165,7 +171,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const banner = params.get('payment')
   if (!detail || !mission) return <div className="page">{err ? <div className="alert bad">{err}</div> : <Empty>Loading mission…</Empty>}</div>
 
-  const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved') && mission.status !== 'running'
+  const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !['COMPLETED', 'CANCELLED', 'VOIDED', 'EXPIRED', 'REFUNDED'].includes(payment.status)
+  const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'
   const remaining = mandate ? mandate.total_budget - mandate.spent - mandate.reserved : 0
 
   return (
@@ -241,14 +248,17 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
               {canDecide && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
-                  <button className="btn paypal lg" onClick={approve} disabled={busy !== ''}>
-                    {busy === 'approve' ? 'Creating PayPal order…' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
-                  </button>
-                  {!rejecting && (
-                    <button className="btn danger" onClick={() => setRejecting(true)} disabled={busy !== ''}>
-                      Reject with feedback
+                  {!unpaidOrder && (
+                    <button className="btn paypal lg" onClick={approve} disabled={busy !== ''}>
+                      {busy === 'approve' ? 'Creating PayPal order…' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
                     </button>
                   )}
+                  {!rejecting && (
+                    <button className="btn danger" onClick={() => setRejecting(true)} disabled={busy !== ''}>
+                      {unpaidOrder ? 'Withdraw order & send feedback' : 'Reject with feedback'}
+                    </button>
+                  )}
+                  {config?.demo_buyer_hint && !unpaidOrder && <span className="muted hint">Sandbox buyer for testing: {config.demo_buyer_hint}</span>}
                 </div>
               )}
               {canDecide && rejecting && (
@@ -295,7 +305,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
                   <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>
                   <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
-                  <span className="muted">{payment.mode === 'mock' ? 'Simulated checkout page' : 'Log in with a sandbox buyer account'}</span>
+                  <span className="muted">{payment.mode === 'mock' ? 'Simulated checkout page' : config?.demo_buyer_hint ? `Sandbox buyer for testing: ${config.demo_buyer_hint}` : 'Log in with a sandbox buyer account'}</span>
                 </div>
               )}
             </Card>

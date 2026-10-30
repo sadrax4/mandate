@@ -6,6 +6,9 @@ You give the agent a *mandate*: a budget, a per-item cap, allowed categories, bl
 
 Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (October–November 2026) with Go, Claude, PayPal Orders v2, AG Grid, Channel3 and Render.
 
+**Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
+To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
+
 ![Mission with a pending proposal](docs/screenshots/mission-proposal.png)
 
 ## Why
@@ -31,6 +34,15 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
 
 Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)).
+
+## Judging in two minutes
+
+1. Open the live demo, click **New mandate** (or use *Create demo mandate*), give it a budget of 300 and a per-item cap of 150.
+2. Start a mission such as *"a mechanical keyboard with brown switches under $120"* and watch the agent search Channel3, check the mandate and propose.
+3. **Approve & pay with PayPal**, log in with the sandbox buyer above, pay. Back in Mandate the capture ID appears and the **Ledger** shows the order.
+4. Start another mission and **Reject with feedback** to see the agent revise.
+
+The same flow runs locally with no keys at all (offline demo mode), see below.
 
 ## Quick start
 
@@ -77,6 +89,7 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `STATIC_DIR` | `web/dist` | Built UI |
 | `CURRENCY` | `USD` | Default mandate currency |
 | `MAX_MISSIONS_PER_HOUR` | `40` | Server-wide cap on agent runs per hour, so a public demo cannot drain the model budget (`0` = unlimited) |
+| `DEMO_BUYER_HINT` | | Text shown next to the PayPal button, e.g. the sandbox buyer login testers should use |
 
 The server also reads a `.env` file in the working directory.
 

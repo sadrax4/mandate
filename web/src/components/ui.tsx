@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { label, statusTone } from '../api'
+import { label, money, statusTone } from '../api'
 
 export function Pill({ status, children }: { status: string; children?: ReactNode }) {
   return (
@@ -30,7 +30,7 @@ export function Empty({ children }: { children: ReactNode }) {
 
 export function BudgetBar({ total, spent, reserved, currency }: { total: number; spent: number; reserved: number; currency: string }) {
   const pct = (v: number) => `${Math.min(100, Math.max(0, (v / total) * 100))}%`
-  const fmt = (v: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: currency || 'USD' }).format(v)
+  const fmt = (v: number) => money(v, currency)
   return (
     <div className="budget">
       <div className="budget-bar">

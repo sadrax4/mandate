@@ -22,6 +22,7 @@ type env struct {
 	ts  *httptest.Server
 	st  *store.Store
 	cli *http.Client
+	pp  *paypal.Mock
 }
 
 func newEnv(t *testing.T) *env {
@@ -37,7 +38,26 @@ func newEnv(t *testing.T) *env {
 	ts.Config.Handler = srv.Handler()
 	t.Cleanup(ts.Close)
 	cli := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &env{t: t, ts: ts, st: st, cli: cli}
+	return &env{t: t, ts: ts, st: st, cli: cli, pp: pp}
+}
+
+// startAutoApproved creates a mandate with an auto-approve threshold and a
+// mission whose cart falls under it, so an order exists immediately.
+func (e *env) startAutoApproved() (mandateID, missionID, orderID string) {
+	e.t.Helper()
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Petty cash", "total_budget": 100, "auto_approve_under": 60}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingPayment)
+	return md["id"].(string), ms["id"].(string), out["payments"].([]any)[0].(map[string]any)["id"].(string)
+}
+
+func (e *env) mandateNumbers(id string) (spent, reserved float64) {
+	var mdv map[string]any
+	e.get("/api/mandates/"+id, &mdv)
+	m := mdv["mandate"].(map[string]any)
+	return m["spent"].(float64), m["reserved"].(float64)
 }
 
 func (e *env) post(path string, body any, out any) int {
@@ -357,5 +377,159 @@ func TestMissionRateLimit(t *testing.T) {
 	}
 	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress"}, &out); code != 429 {
 		t.Fatalf("expected 429, got %d", code)
+	}
+}
+
+func TestCancelIsIdempotentAndNeverNegative(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	if _, reserved := e.mandateNumbers(mdID); reserved <= 0 {
+		t.Fatal("expected a reservation after order creation")
+	}
+	for i := 0; i < 3; i++ { // the buyer reloads the cancel page
+		r, _ := e.cli.Get(fmt.Sprintf("%s/paypal/cancel?token=%s", e.ts.URL, orderID))
+		r.Body.Close()
+	}
+	e.waitMission(msID, store.MissionCancelled)
+	if spent, reserved := e.mandateNumbers(mdID); spent != 0 || reserved != 0 {
+		t.Fatalf("after cancel: spent=%v reserved=%v", spent, reserved)
+	}
+	// cancel after completion must not touch anything
+	_, _, order2 := func() (string, string, string) { return e.startAutoApproved() }()
+	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {order2}, "action": {"approve"}})
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, order2))
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/cancel?token=%s", e.ts.URL, order2))
+	r.Body.Close()
+	pay, _ := e.st.GetPayment(order2)
+	if pay.Status != "COMPLETED" || pay.Reserved {
+		t.Fatalf("cancel after completion changed the payment: %+v", pay)
+	}
+}
+
+func TestCancelThenLateCaptureKeepsBooksStraight(t *testing.T) {
+	e := newEnv(t)
+	mdID, _, orderID := e.startAutoApproved()
+	r, _ := e.cli.Get(fmt.Sprintf("%s/paypal/cancel?token=%s", e.ts.URL, orderID))
+	r.Body.Close()
+	// the buyer presses Back on PayPal and approves the still-valid order
+	r, _ = e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {orderID}, "action": {"approve"}})
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, orderID))
+	r.Body.Close()
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Status != "COMPLETED" || spent != pay.Amount || reserved != 0 {
+		t.Fatalf("late capture: status=%s spent=%v reserved=%v amount=%v", pay.Status, spent, reserved, pay.Amount)
+	}
+}
+
+func TestSyncVoidedOrderReleasesReservation(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	e.pp.SetStatus(orderID, "VOIDED")
+	var pay map[string]any
+	if code := e.post("/api/payments/"+orderID+"/sync", nil, &pay); code != 200 || pay["status"] != "VOIDED" {
+		t.Fatalf("sync: %d %v", code, pay)
+	}
+	e.waitMission(msID, store.MissionCancelled)
+	if _, reserved := e.mandateNumbers(mdID); reserved != 0 {
+		t.Fatalf("reservation not released: %v", reserved)
+	}
+}
+
+func TestRefundWebhookReturnsSpend(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {orderID}, "action": {"approve"}})
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, orderID))
+	r.Body.Close()
+	e.waitMission(msID, store.MissionPaid)
+	if spent, _ := e.mandateNumbers(mdID); spent <= 0 {
+		t.Fatal("expected spend after capture")
+	}
+	ev := fmt.Sprintf(`{"id":"WH-R","event_type":"PAYMENT.CAPTURE.REFUNDED","resource_type":"refund","resource":{"id":"REF1","status":"COMPLETED","supplementary_data":{"related_ids":{"order_id":%q}}}}`, orderID)
+	for i := 0; i < 2; i++ { // PayPal retries deliveries
+		req, _ := http.NewRequest(http.MethodPost, e.ts.URL+"/paypal/webhook", strings.NewReader(ev))
+		req.Header.Set("Paypal-Transmission-Sig", "mock")
+		resp, _ := e.cli.Do(req)
+		resp.Body.Close()
+	}
+	e.waitMission(msID, store.MissionRefunded)
+	if spent, reserved := e.mandateNumbers(mdID); spent != 0 || reserved != 0 {
+		t.Fatalf("after refund: spent=%v reserved=%v", spent, reserved)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	if pay.Status != "REFUNDED" {
+		t.Fatalf("payment status = %s", pay.Status)
+	}
+}
+
+func TestRejectApprovedUnpaidWithdrawsOrder(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	out := e.waitMission(msID, store.MissionAwaitingPayment)
+	pid := out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "changed my mind, pick a cheaper one"}, &rj); code != 200 {
+		t.Fatalf("reject approved-unpaid: %d %v", code, rj)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	if pay.Status != "CANCELLED" || pay.Reserved {
+		t.Fatalf("order not withdrawn: %+v", pay)
+	}
+	if _, reserved := e.mandateNumbers(mdID); reserved != 0 {
+		t.Fatalf("reservation not released: %v", reserved)
+	}
+	// the agent proposes again and, under the threshold, a new order appears
+	out = e.waitMission(msID, store.MissionAwaitingPayment)
+	if len(out["proposals"].([]any)) != 2 {
+		t.Fatalf("expected a second proposal, got %d", len(out["proposals"].([]any)))
+	}
+	// a paid proposal cannot be rejected
+	ids := out["payments"].([]any)
+	newOrder := ids[0].(map[string]any)["id"].(string)
+	if newOrder == orderID {
+		newOrder = ids[1].(map[string]any)["id"].(string)
+	}
+	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {newOrder}, "action": {"approve"}})
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, newOrder))
+	r.Body.Close()
+	e.waitMission(msID, store.MissionPaid)
+	pid2 := out["proposals"].([]any)[1].(map[string]any)["id"].(string)
+	if code := e.post("/api/proposals/"+pid2+"/reject", map[string]any{"reason": "x"}, &rj); code != 409 {
+		t.Fatalf("expected 409 rejecting a paid proposal, got %d", code)
+	}
+}
+
+func TestConcurrentApprovalsReserveOnce(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Desk", "total_budget": 300}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingApproval)
+	pid := out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+	done := make(chan int, 5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			var ap map[string]any
+			done <- e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+		}()
+	}
+	for i := 0; i < 5; i++ {
+		if code := <-done; code != 200 {
+			t.Fatalf("approve returned %d", code)
+		}
+	}
+	pays := e.st.ListPayments()
+	if len(pays) != 1 {
+		t.Fatalf("expected exactly one order, got %d", len(pays))
+	}
+	if _, reserved := e.mandateNumbers(md["id"].(string)); reserved != pays[0].Amount {
+		t.Fatalf("reserved %v, want %v", reserved, pays[0].Amount)
 	}
 }

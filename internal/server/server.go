@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"mandate/internal/agent"
 	"mandate/internal/catalog"
@@ -39,6 +40,9 @@ type Config struct {
 	// the whole server, so a public demo cannot drain the model budget.
 	// 0 disables the cap.
 	MaxMissionsPerHour int
+	// DemoBuyerHint is shown next to the PayPal button so testers know which
+	// sandbox buyer account to log in with (never used for anything else).
+	DemoBuyerHint string
 }
 
 // Server is the HTTP layer.
@@ -53,6 +57,11 @@ type Server struct {
 
 	rateMu     sync.Mutex
 	rateStarts []time.Time
+
+	// payMu serialises every money-moving transition (approve, capture,
+	// cancel, void, refund) so a double click or a webhook racing a redirect
+	// can never reserve or spend the same amount twice.
+	payMu sync.Mutex
 }
 
 // New wires the handlers.
@@ -117,12 +126,13 @@ func (s *Server) routes() {
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"paypal_mode":  s.pp.Mode(),
-		"llm_provider": s.shopper.Provider.Name(),
-		"catalog":      s.catalog.Name(),
-		"currency":     s.cfg.Currency,
-		"public_url":   s.cfg.PublicURL,
-		"version":      s.cfg.Version,
+		"paypal_mode":     s.pp.Mode(),
+		"llm_provider":    s.shopper.Provider.Name(),
+		"catalog":         s.catalog.Name(),
+		"currency":        s.cfg.Currency,
+		"public_url":      s.cfg.PublicURL,
+		"version":         s.cfg.Version,
+		"demo_buyer_hint": s.cfg.DemoBuyerHint,
 	})
 }
 
@@ -323,6 +333,8 @@ func (e *httpError) Error() string { return e.msg }
 // createPayment turns an approved proposal into a PayPal order and reserves
 // the budget. It is used by the approve endpoint and by auto-approval.
 func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.Payment, error) {
+	s.payMu.Lock()
+	defer s.payMu.Unlock()
 	p, err := s.st.GetProposal(proposalID)
 	if err != nil {
 		return nil, &httpError{404, "proposal not found"}
@@ -363,7 +375,7 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		s.st.AddEvent(p.MissionID, "error", "PayPal order creation failed: "+err.Error(), nil)
 		return nil, fmt.Errorf("PayPal order creation failed: %w", err)
 	}
-	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), CreatedAt: time.Now()}
+	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, CreatedAt: time.Now()}
 	s.st.PutPayment(pay)
 	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error { m.Reserved = mandate.Round(m.Reserved + d.Total); return nil })
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
@@ -380,6 +392,48 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	return pay, nil
 }
 
+// releaseReservation gives a payment's budget reservation back to the mandate.
+// It is a no-op when the reservation was already released. Call with payMu held.
+func (s *Server) releaseReservation(payID string) {
+	pay, err := s.st.GetPayment(payID)
+	if err != nil || !pay.Reserved {
+		return
+	}
+	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) { x.Reserved = false })
+	_ = s.st.UpdateMandate(pay.MandateID, func(m *mandate.Mandate) error {
+		m.Reserved = mandate.Round(m.Reserved - pay.Amount)
+		if m.Reserved < 0 {
+			m.Reserved = 0
+		}
+		return nil
+	})
+}
+
+// voidPayment records that an order will never be captured (buyer cancelled,
+// order expired, human withdrew approval) and releases its reservation.
+// Call with payMu held. Returns false if the payment is already final.
+func (s *Server) voidPayment(payID, status, event, message string) bool {
+	pay, err := s.st.GetPayment(payID)
+	if err != nil || pay.Status == "COMPLETED" || pay.Status == "CANCELLED" || pay.Status == "VOIDED" || pay.Status == "EXPIRED" || pay.Status == "REFUNDED" {
+		return false
+	}
+	s.releaseReservation(payID)
+	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) { x.Status = status })
+	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) {
+		if pr.Status == store.ProposalApproved || pr.Status == store.ProposalAutoApproved || pr.Status == store.ProposalPending {
+			pr.Status = store.ProposalCancelled
+		}
+	})
+	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) {
+		if m.Status == store.MissionAwaitingPayment || m.Status == store.MissionAwaitingApproval {
+			m.Status = store.MissionCancelled
+		}
+	})
+	s.st.AddEvent(pay.MissionID, event, message, map[string]any{"order_id": payID, "status": status})
+	s.shopper.Forget(pay.MissionID)
+	return true
+}
+
 func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Reason string `json:"reason"`
@@ -389,25 +443,35 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	if in.Reason == "" {
 		in.Reason = "rejected without a reason"
 	}
+	s.payMu.Lock()
 	p, err := s.st.GetProposal(r.PathValue("id"))
 	if err != nil {
+		s.payMu.Unlock()
 		writeErr(w, 404, "proposal not found")
 		return
 	}
-	if p.Status != store.ProposalPending && p.Status != store.ProposalAutoApproved {
+	switch p.Status {
+	case store.ProposalPending, store.ProposalAutoApproved:
+	case store.ProposalApproved:
+		// An order exists but has not been captured: withdraw it.
+		pay, err := s.st.GetPayment(p.OrderID)
+		if err != nil || pay.Status == "COMPLETED" {
+			s.payMu.Unlock()
+			writeErr(w, 409, "this proposal has already been paid")
+			return
+		}
+		s.releaseReservation(pay.ID)
+		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = "CANCELLED" })
+		s.st.AddEvent(p.MissionID, "cancelled", "order "+pay.ID+" withdrawn before capture; reservation released", map[string]any{"order_id": pay.ID})
+	default:
+		s.payMu.Unlock()
 		writeErr(w, 409, "proposal is "+p.Status+", it cannot be rejected")
 		return
 	}
 	if !s.allowMissionStart() {
+		s.payMu.Unlock()
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
-	}
-	if p.OrderID != "" {
-		// an auto-approved proposal already has an order: release the reservation and void it locally
-		if pay, err := s.st.GetPayment(p.OrderID); err == nil && pay.Status != "COMPLETED" {
-			_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = "CANCELLED" })
-			_ = s.st.UpdateMandate(p.MandateID, func(m *mandate.Mandate) error { m.Reserved = mandate.Round(m.Reserved - pay.Amount); return nil })
-		}
 	}
 	now := time.Now()
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
@@ -420,6 +484,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		m.ProposalID = ""
 		m.OrderID = ""
 	})
+	s.payMu.Unlock()
 	s.st.AddEvent(p.MissionID, "rejected", "human rejected the proposal: "+in.Reason, map[string]any{"proposal_id": p.ID})
 	go s.shopper.Resume(context.Background(), p.MissionID, in.Reason)
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -435,7 +500,7 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "payment not found")
 		return
 	}
-	if pay.Status == "COMPLETED" || pay.Status == "CANCELLED" {
+	if pay.Status == "COMPLETED" || pay.Status == "CANCELLED" || pay.Status == "VOIDED" || pay.Status == "REFUNDED" {
 		writeJSON(w, 200, pay)
 		return
 	}
@@ -452,39 +517,74 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if order.Status == "COMPLETED" {
-		s.markPaid(pay, order)
-	} else {
-		pay, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = order.Status })
+	switch order.Status {
+	case "COMPLETED":
+		s.markPaid(pay.ID, order)
+	case "VOIDED", "EXPIRED":
+		s.payMu.Lock()
+		s.voidPayment(pay.ID, order.Status, "cancelled", "PayPal reports the order is "+strings.ToLower(order.Status)+"; reservation released")
+		s.payMu.Unlock()
+	default:
+		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = order.Status })
 	}
 	pay, _ = s.st.GetPayment(pay.ID)
 	writeJSON(w, 200, pay)
 }
 
 // markPaid records a completed capture everywhere it matters. It is
-// idempotent: the return redirect, the sync endpoint and a webhook can all
-// report the same capture.
-func (s *Server) markPaid(pay *store.Payment, order *paypal.Order) {
-	if cur, err := s.st.GetPayment(pay.ID); err == nil && cur.Status == "COMPLETED" {
+// idempotent and serialised: the return redirect, the sync endpoint and a
+// webhook can all report the same capture without double-counting.
+func (s *Server) markPaid(payID string, order *paypal.Order) {
+	s.payMu.Lock()
+	defer s.payMu.Unlock()
+	pay, err := s.st.GetPayment(payID)
+	if err != nil || pay.Status == "COMPLETED" {
 		return
 	}
 	amount := order.Amount
 	if amount == 0 {
 		amount = pay.Amount
 	}
-	_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) {
-		x.Status = order.Status
+	s.releaseReservation(payID)
+	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) {
+		x.Status = "COMPLETED"
 		x.CaptureID = order.CaptureID
 		x.PayerEmail = order.PayerEmail
+		x.Amount = amount
 	})
 	_ = s.st.UpdateMandate(pay.MandateID, func(m *mandate.Mandate) error {
-		m.Reserved = mandate.Round(m.Reserved - pay.Amount)
 		m.Spent = mandate.Round(m.Spent + amount)
 		return nil
 	})
 	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) { pr.Status = store.ProposalPaid })
 	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionPaid })
 	s.st.AddEvent(pay.MissionID, "paid", fmt.Sprintf("payment captured: %.2f %s (capture %s)", amount, pay.Currency, order.CaptureID), map[string]any{"order_id": order.ID, "capture_id": order.CaptureID, "amount": amount})
+	s.shopper.Forget(pay.MissionID)
+}
+
+// markRefunded reverses a completed capture (refund, reversal, denial after
+// completion): the spend is returned to the mandate and the proposal and
+// mission are marked refunded. Idempotent.
+func (s *Server) markRefunded(payID, status string) {
+	s.payMu.Lock()
+	defer s.payMu.Unlock()
+	pay, err := s.st.GetPayment(payID)
+	if err != nil {
+		return
+	}
+	if pay.Status == "COMPLETED" {
+		_ = s.st.UpdateMandate(pay.MandateID, func(m *mandate.Mandate) error {
+			m.Spent = mandate.Round(m.Spent - pay.Amount)
+			if m.Spent < 0 {
+				m.Spent = 0
+			}
+			return nil
+		})
+		_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) { pr.Status = store.ProposalRefunded })
+		_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionRefunded })
+		s.st.AddEvent(pay.MissionID, "refunded", fmt.Sprintf("capture %s: %.2f %s returned to the mandate", status, pay.Amount, pay.Currency), map[string]any{"order_id": payID, "status": status})
+	}
+	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) { x.Status = status })
 }
 
 func (s *Server) handleLedger(w http.ResponseWriter, _ *http.Request) {
@@ -525,6 +625,10 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/#/?error=unknown_order", http.StatusFound)
 		return
 	}
+	if pay.Status == "COMPLETED" { // refreshed return page
+		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=completed", http.StatusFound)
+		return
+	}
 	order, err := s.pp.CaptureOrder(r.Context(), token)
 	if err != nil {
 		s.st.AddEvent(pay.MissionID, "error", "PayPal capture failed: "+err.Error(), nil)
@@ -533,7 +637,7 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if order.Status == "COMPLETED" {
-		s.markPaid(pay, order)
+		s.markPaid(pay.ID, order)
 	} else {
 		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = order.Status })
 		s.st.AddEvent(pay.MissionID, "payment", "PayPal order status: "+order.Status, map[string]any{"order_id": order.ID})
@@ -548,11 +652,9 @@ func (s *Server) handlePayPalCancel(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/#/", http.StatusFound)
 		return
 	}
-	_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = "CANCELLED" })
-	_ = s.st.UpdateMandate(pay.MandateID, func(m *mandate.Mandate) error { m.Reserved = mandate.Round(m.Reserved - pay.Amount); return nil })
-	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) { pr.Status = store.ProposalCancelled })
-	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionCancelled })
-	s.st.AddEvent(pay.MissionID, "cancelled", "buyer cancelled at PayPal checkout; reservation released", map[string]any{"order_id": pay.ID})
+	s.payMu.Lock()
+	s.voidPayment(pay.ID, "CANCELLED", "cancelled", "buyer cancelled at PayPal checkout; reservation released")
+	s.payMu.Unlock()
 	http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=cancelled", http.StatusFound)
 }
 
@@ -600,18 +702,22 @@ func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if order.Status == "COMPLETED" {
-				s.markPaid(pay, order)
+				s.markPaid(pay.ID, order)
 			}
 		}
 	case "PAYMENT.CAPTURE.COMPLETED":
 		if pay.Status != "COMPLETED" {
 			order, err := s.pp.GetOrder(r.Context(), orderID)
 			if err == nil && order.Status == "COMPLETED" {
-				s.markPaid(pay, order)
+				s.markPaid(pay.ID, order)
 			}
 		}
-	case "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED":
-		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = strings.TrimPrefix(ev.EventType, "PAYMENT.CAPTURE.") })
+	case "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED", "PAYMENT.CAPTURE.DENIED":
+		s.markRefunded(pay.ID, strings.TrimPrefix(ev.EventType, "PAYMENT.CAPTURE."))
+	case "CHECKOUT.ORDER.VOIDED":
+		s.payMu.Lock()
+		s.voidPayment(pay.ID, "VOIDED", "cancelled", "PayPal voided the order; reservation released")
+		s.payMu.Unlock()
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
@@ -713,10 +819,11 @@ func firstViolation(d mandate.Decision) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	r := []rune(s)
+	return string(r[:n-1]) + "…"
 }
 
 func logRequests(next http.Handler) http.Handler {

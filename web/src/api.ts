@@ -126,6 +126,7 @@ export type Config = {
   currency: string
   public_url: string
   version: string
+  demo_buyer_hint?: string
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -183,6 +184,12 @@ export const STATUS_LABEL: Record<string, string> = {
   CREATED: 'Created',
   CANCELLED: 'Cancelled',
   CAPTURE_FAILED: 'Capture failed',
+  VOIDED: 'Voided',
+  EXPIRED: 'Expired',
+  REFUNDED: 'Refunded',
+  REVERSED: 'Reversed',
+  DENIED: 'Denied',
+  refunded: 'Refunded',
 }
 
 export const label = (s: string) => STATUS_LABEL[s] ?? s.replace(/_/g, ' ')
@@ -206,6 +213,12 @@ export const statusTone = (s: string) => {
     case 'CAPTURE_FAILED':
     case 'cancelled':
     case 'CANCELLED':
+    case 'VOIDED':
+    case 'EXPIRED':
+    case 'REFUNDED':
+    case 'REVERSED':
+    case 'DENIED':
+    case 'refunded':
     case 'rejected':
       return 'bad'
     case 'running':

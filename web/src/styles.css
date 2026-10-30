@@ -208,3 +208,4 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
 .md li { margin: 2px 0; }
 .md code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
 .ev .msg.md { white-space: normal; }
+.hint { font-size: 12.5px; max-width: 420px; }

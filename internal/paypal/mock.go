@@ -69,6 +69,15 @@ func (m *Mock) Approve(orderID string, approve bool) (string, error) {
 	return appendToken(o.ReturnURL, orderID), nil
 }
 
+// SetStatus overrides an order's status (tests simulate VOIDED/EXPIRED orders).
+func (m *Mock) SetStatus(orderID, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if o, ok := m.orders[orderID]; ok {
+		o.Status = status
+	}
+}
+
 // Details returns what the simulator page shows the buyer.
 func (m *Mock) Details(orderID string) (*Order, []OrderItem, error) {
 	m.mu.Lock()

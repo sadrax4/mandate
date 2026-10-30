@@ -27,6 +27,7 @@ const (
 	MissionCancelled        = "cancelled"
 	MissionNoProposal       = "no_proposal"
 	MissionFailed           = "failed"
+	MissionRefunded         = "refunded"
 )
 
 // Proposal status values.
@@ -38,6 +39,7 @@ const (
 	ProposalRejectedByPolicy = "rejected_by_policy"
 	ProposalPaid             = "paid"
 	ProposalCancelled        = "cancelled"
+	ProposalRefunded         = "refunded"
 )
 
 // Mission is one goal the agent works on under a mandate.
@@ -72,19 +74,22 @@ type Proposal struct {
 
 // Payment is a PayPal order created for a proposal.
 type Payment struct {
-	ID         string    `json:"id"` // PayPal order ID
-	ProposalID string    `json:"proposal_id"`
-	MissionID  string    `json:"mission_id"`
-	MandateID  string    `json:"mandate_id"`
-	Status     string    `json:"status"`
-	Amount     float64   `json:"amount"`
-	Currency   string    `json:"currency"`
-	ApproveURL string    `json:"approve_url,omitempty"`
-	CaptureID  string    `json:"capture_id,omitempty"`
-	PayerEmail string    `json:"payer_email,omitempty"`
-	Mode       string    `json:"mode"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string  `json:"id"` // PayPal order ID
+	ProposalID string  `json:"proposal_id"`
+	MissionID  string  `json:"mission_id"`
+	MandateID  string  `json:"mandate_id"`
+	Status     string  `json:"status"`
+	Amount     float64 `json:"amount"`
+	Currency   string  `json:"currency"`
+	ApproveURL string  `json:"approve_url,omitempty"`
+	CaptureID  string  `json:"capture_id,omitempty"`
+	PayerEmail string  `json:"payer_email,omitempty"`
+	Mode       string  `json:"mode"`
+	// Reserved is true while this payment holds a budget reservation on the
+	// mandate. It is cleared exactly once, on capture, cancel or void.
+	Reserved  bool      `json:"reserved"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Event is one line in a mission's activity log.
@@ -106,12 +111,17 @@ type state struct {
 	EventSeq  int64                       `json:"event_seq"`
 }
 
-// Store is safe for concurrent use.
+// Store is safe for concurrent use. Writes are persisted to the JSON file
+// asynchronously, at most a few times per second, so bursts of agent events
+// do not rewrite the file on every change; Close flushes what is pending.
 type Store struct {
 	mu   sync.RWMutex
 	path string
 	s    state
 	subs map[string][]chan Event
+
+	saveMu    sync.Mutex
+	saveTimer *time.Timer
 }
 
 // ErrNotFound is returned for unknown IDs.
@@ -146,11 +156,26 @@ func Open(path string) (*Store, error) {
 	return st, nil
 }
 
+// persist schedules a save. It is called with st.mu held, so it must not
+// block on the file; the actual write happens on a timer goroutine.
 func (st *Store) persist() {
 	if st.path == "" {
 		return
 	}
+	st.saveMu.Lock()
+	defer st.saveMu.Unlock()
+	if st.saveTimer == nil {
+		st.saveTimer = time.AfterFunc(250*time.Millisecond, st.flush)
+	}
+}
+
+func (st *Store) flush() {
+	st.saveMu.Lock()
+	st.saveTimer = nil
+	st.saveMu.Unlock()
+	st.mu.RLock()
 	data, err := json.MarshalIndent(st.s, "", "  ")
+	st.mu.RUnlock()
 	if err != nil {
 		return
 	}
@@ -159,6 +184,21 @@ func (st *Store) persist() {
 	if err := os.WriteFile(tmp, data, 0o644); err == nil {
 		_ = os.Rename(tmp, st.path)
 	}
+}
+
+// Close writes any pending change to disk. Call it on shutdown.
+func (st *Store) Close() {
+	if st.path == "" {
+		return
+	}
+	st.saveMu.Lock()
+	t := st.saveTimer
+	st.saveTimer = nil
+	st.saveMu.Unlock()
+	if t != nil {
+		t.Stop()
+	}
+	st.flush()
 }
 
 // NewID returns a short random identifier with a prefix.
@@ -379,6 +419,8 @@ func (st *Store) AddEvent(missionID, typ, message string, data any) Event {
 	subs := append([]chan Event(nil), st.subs[missionID]...)
 	st.persist()
 	st.mu.Unlock()
+	// Deliver without blocking the store. A subscriber whose buffer is full
+	// misses the event; the UI also polls, so it recovers on the next refresh.
 	for _, ch := range subs {
 		select {
 		case ch <- ev:
@@ -402,7 +444,7 @@ func (st *Store) ListEvents(missionID string, afterID int64) []Event {
 
 // Subscribe returns a channel of new events for a mission and an unsubscribe func.
 func (st *Store) Subscribe(missionID string) (<-chan Event, func()) {
-	ch := make(chan Event, 64)
+	ch := make(chan Event, 256)
 	st.mu.Lock()
 	st.subs[missionID] = append(st.subs[missionID], ch)
 	st.mu.Unlock()

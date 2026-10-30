@@ -60,11 +60,38 @@ type Shopper struct {
 
 	mu       sync.Mutex
 	sessions map[string]Session
+	order    []string // mission IDs in creation order, for eviction
+	runLocks map[string]*sync.Mutex
 }
+
+// maxSessions bounds the conversations kept in memory on a long-running server.
+const maxSessions = 200
 
 // NewShopper builds a Shopper.
 func NewShopper(p Provider, c catalog.Searcher, st *store.Store) *Shopper {
-	return &Shopper{Provider: p, Catalog: c, Store: st, MaxSearches: 8, sessions: map[string]Session{}}
+	return &Shopper{Provider: p, Catalog: c, Store: st, MaxSearches: 8, sessions: map[string]Session{}, runLocks: map[string]*sync.Mutex{}}
+}
+
+// Forget drops the conversation for a mission that can no longer be resumed
+// (paid, cancelled, refunded). It is safe to call for unknown missions.
+func (s *Shopper) Forget(missionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, missionID)
+	delete(s.runLocks, missionID)
+}
+
+// runLock serialises agent runs per mission: a rejection arriving while the
+// model is still finishing its previous turn waits instead of racing it.
+func (s *Shopper) runLock(missionID string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.runLocks[missionID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.runLocks[missionID] = l
+	}
+	return l
 }
 
 // SystemPrompt is what the model is told it is.
@@ -128,6 +155,9 @@ func (s *Shopper) Resume(ctx context.Context, missionID, feedback string) {
 }
 
 func (s *Shopper) converse(ctx context.Context, missionID string, sess Session, userMsg string) {
+	l := s.runLock(missionID)
+	l.Lock()
+	defer l.Unlock()
 	s.Store.AddEvent(missionID, "status", "agent started", nil)
 	_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
 		m.Status = store.MissionRunning
@@ -175,7 +205,18 @@ func (s *Shopper) session(missionID string, replace bool) Session {
 		}
 	}
 	sess := s.Provider.NewSession(SystemPrompt)
+	if _, exists := s.sessions[missionID]; !exists {
+		s.order = append(s.order, missionID)
+	}
 	s.sessions[missionID] = sess
+	for len(s.sessions) > maxSessions && len(s.order) > 0 {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		if oldest != missionID {
+			delete(s.sessions, oldest)
+			delete(s.runLocks, oldest)
+		}
+	}
 	return sess
 }
 

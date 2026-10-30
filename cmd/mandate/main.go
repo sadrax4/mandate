@@ -39,23 +39,30 @@ func main() {
 	}
 
 	// Catalog: Channel3 when a key is present, otherwise the built-in demo catalog.
+	catName := strings.ToLower(env("CATALOG", ""))
+	c3Key := os.Getenv("CHANNEL3_API_KEY")
+	if catName == "" {
+		if c3Key != "" {
+			catName = "channel3"
+		} else {
+			catName = "mock"
+		}
+	}
 	var cat catalog.Searcher
-	switch strings.ToLower(env("CATALOG", "")) {
+	switch catName {
 	case "channel3":
-		if os.Getenv("CHANNEL3_API_KEY") == "" {
+		if c3Key == "" {
 			log.Println("CATALOG=channel3 but CHANNEL3_API_KEY is empty: falling back to the built-in demo catalog")
 			cat = catalog.NewMock()
 		} else {
-			cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
+			c3 := catalog.NewChannel3(c3Key, os.Getenv("CHANNEL3_BASE_URL"))
+			c3.Currency = strings.ToUpper(env("CURRENCY", "USD"))
+			cat = c3
 		}
-	case "mock", "":
-		if os.Getenv("CHANNEL3_API_KEY") != "" && env("CATALOG", "") == "" {
-			cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
-		} else {
-			cat = catalog.NewMock()
-		}
+	case "mock":
+		cat = catalog.NewMock()
 	default:
-		log.Fatalf("unknown CATALOG %q (mock|channel3)", os.Getenv("CATALOG"))
+		log.Fatalf("unknown CATALOG %q (mock|channel3)", catName)
 	}
 
 	// LLM provider. Either an Anthropic Console key (ANTHROPIC_API_KEY) or a
@@ -112,8 +119,12 @@ func main() {
 	}
 
 	shopper := agent.NewShopper(provider, cat, st)
-	maxRuns, _ := strconv.Atoi(env("MAX_MISSIONS_PER_HOUR", "40"))
-	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns}, st, pp, shopper, cat)
+	maxRuns, err := strconv.Atoi(strings.TrimSpace(env("MAX_MISSIONS_PER_HOUR", "40")))
+	if err != nil {
+		log.Printf("MAX_MISSIONS_PER_HOUR=%q is not a number: using 40", os.Getenv("MAX_MISSIONS_PER_HOUR"))
+		maxRuns = 40
+	}
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns, DemoBuyerHint: os.Getenv("DEMO_BUYER_HINT")}, st, pp, shopper, cat)
 
 	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -128,6 +139,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+	st.Close()
 	fmt.Println("bye")
 }
 
@@ -160,10 +172,20 @@ func loadDotEnv(path string) {
 			continue
 		}
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
-		if i := strings.Index(v, " #"); i >= 0 { // trailing comment
-			v = strings.TrimSpace(v[:i])
+		switch {
+		case len(v) >= 2 && (v[0] == '"' || v[0] == '\''):
+			// quoted value: everything up to the matching quote, comments after it ignored
+			q := v[0]
+			if end := strings.IndexByte(v[1:], q); end >= 0 {
+				v = v[1 : 1+end]
+			} else {
+				v = strings.Trim(v, string(q))
+			}
+		default:
+			if i := strings.Index(v, " #"); i >= 0 { // trailing comment
+				v = strings.TrimSpace(v[:i])
+			}
 		}
-		v = strings.Trim(v, `"'`)
 		if os.Getenv(k) == "" || fromFile[k] {
 			os.Setenv(k, v)
 			fromFile[k] = true

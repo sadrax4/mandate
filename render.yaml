@@ -20,4 +20,10 @@ services:
       - key: CHANNEL3_API_KEY
         sync: false
       - key: CATALOG
-        value: mock
+        value: channel3
+      - key: ANTHROPIC_EFFORT
+        value: high
+      - key: MAX_MISSIONS_PER_HOUR
+        value: "40"
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false

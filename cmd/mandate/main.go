@@ -42,7 +42,12 @@ func main() {
 	var cat catalog.Searcher
 	switch strings.ToLower(env("CATALOG", "")) {
 	case "channel3":
-		cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
+		if os.Getenv("CHANNEL3_API_KEY") == "" {
+			log.Println("CATALOG=channel3 but CHANNEL3_API_KEY is empty: falling back to the built-in demo catalog")
+			cat = catalog.NewMock()
+		} else {
+			cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))
+		}
 	case "mock", "":
 		if os.Getenv("CHANNEL3_API_KEY") != "" && env("CATALOG", "") == "" {
 			cat = catalog.NewChannel3(os.Getenv("CHANNEL3_API_KEY"), os.Getenv("CHANNEL3_BASE_URL"))

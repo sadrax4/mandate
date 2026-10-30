@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { api, money, type Mandate, type Mission } from '../api'
+import { api, money, type Config, type Mandate, type Mission } from '../api'
 import { BudgetBar, Card, Chip, Empty, Pill, navigate } from '../components/ui'
 
 const DEMO_GOALS: { goal: string; note?: string }[] = [
@@ -14,6 +14,23 @@ export default function Dashboard() {
   const [missions, setMissions] = useState<Mission[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
+  const [config, setConfig] = useState<Config | null>(null)
+  const [showAll, setShowAll] = useState(false)
+  const [guideHidden, setGuideHidden] = useState(() => {
+    try {
+      return localStorage.getItem('mandate.guide.hidden') === '1'
+    } catch {
+      return false
+    }
+  })
+  const hideGuide = () => {
+    setGuideHidden(true)
+    try {
+      localStorage.setItem('mandate.guide.hidden', '1')
+    } catch {
+      /* private mode */
+    }
+  }
 
   const load = () =>
     Promise.all([api.mandates(), api.missions()])
@@ -25,9 +42,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     load()
+    api.config().then(setConfig).catch(() => setConfig(null))
     const t = setInterval(load, 4000)
     return () => clearInterval(t)
   }, [])
+  const VISIBLE = 6
+  const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
   const createDemo = async () => {
     setBusy('demo')
@@ -67,14 +88,39 @@ export default function Dashboard() {
       </div>
       {error && <div className="alert bad">{error}</div>}
 
+      {!guideHidden && (
+        <div className="guide">
+          <div>
+            <b>Start here (two minutes).</b>
+            <ol>
+              <li><b>Create demo mandate</b>, or set your own limits with <b>New mandate</b>.</li>
+              <li>Pick a suggested goal and <b>Start mission</b>. Watch the agent search{config?.catalog === 'channel3' ? ' real products through Channel3' : ' the demo catalog'}, check the mandate and propose.</li>
+              <li><b>Approve & pay with PayPal</b>{config?.paypal_mode === 'mock' ? ' (a built-in simulator stands in for PayPal here)' : config?.demo_buyer_hint ? <> and log in with the sandbox buyer <code>{config.demo_buyer_hint}</code></> : ''}. Back here you get the capture ID, the Ledger row and the Insights charts.</li>
+              <li>Then try: approve a second cart with one click (the mandate saved your PayPal account), reject a proposal with feedback, start a goal the mandate cannot fit and accept the agent's suggested fix, or make a mission a monthly standing order.</li>
+            </ol>
+            <span className="muted">Nothing here moves real money: PayPal runs in {config?.paypal_mode === 'mock' ? 'simulated' : 'sandbox'} mode.</span>
+          </div>
+          <button className="btn ghost sm" onClick={hideGuide} aria-label="Hide this guide">Hide</button>
+        </div>
+      )}
+
       {mandates.length === 0 ? (
         <Empty>No mandates yet. Create one, or use the demo mandate to see the whole flow in a minute.</Empty>
       ) : (
-        <div className="mandate-grid">
-          {mandates.map((m) => (
-            <MandateCard key={m.id} mandate={m} missions={missions.filter((x) => x.mandate_id === m.id)} onStarted={load} />
-          ))}
-        </div>
+        <>
+          <div className="mandate-grid">
+            {visible.map((m) => (
+              <MandateCard key={m.id} mandate={m} missions={missions.filter((x) => x.mandate_id === m.id)} onStarted={load} />
+            ))}
+          </div>
+          {sorted.length > VISIBLE && (
+            <div className="actions" style={{ justifyContent: 'center', marginTop: 10 }}>
+              <button className="btn ghost" onClick={() => setShowAll((v) => !v)}>
+                {showAll ? `Show the ${VISIBLE} newest mandates` : `Show all ${sorted.length} mandates`}
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {missions.some((ms) => (ms.repeat_days ?? 0) > 0) && (

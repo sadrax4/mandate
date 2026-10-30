@@ -224,7 +224,7 @@ go test ./...                 # policy engine, catalog, PayPal client (httptest)
 
 The server tests run the full flow through real HTTP: create mandate → start mission → agent proposes → approve → simulated PayPal approval → return → capture → ledger and budget accounting, plus rejection/revision, auto-approval, cancellation, reconciliation, webhooks, saved-account payments (first checkout saves, later carts pay with one click or none, dead tokens fall back to checkout), the suggest-and-amend loop, the insights aggregation and the MCP order assistant (with a scripted MCP server listing and provider).
 
-`scripts/smoke.cjs` and `scripts/smoke-vault.cjs` drive the built UI in a headless browser (Playwright) and produced the demo-mode screenshots in this README.
+`scripts/smoke.cjs` and `scripts/smoke-vault.cjs` drive the built UI in a headless browser (Playwright) and produced the demo-mode screenshots in this README. CI runs them too: the `e2e` job builds the UI and the server, starts it in offline demo mode and walks through checkout, saved-account payments, the suggest-and-amend loop, standing orders and the insights page on every push.
 
 ## Deploy
 

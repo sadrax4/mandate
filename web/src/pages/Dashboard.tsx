@@ -2,11 +2,12 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { api, money, type Config, type Mandate, type Mission } from '../api'
 import { BudgetBar, Card, Chip, Empty, Pill, navigate } from '../components/ui'
 
-const DEMO_GOALS: { goal: string; note?: string }[] = [
+const DEMO_GOALS: { goal: string; note?: string; kind?: string }[] = [
   { goal: 'A mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120' },
   { goal: 'Noise cancelling headphones for open-office work' },
   { goal: 'A large felt desk mat under $40' },
   { goal: 'A gooseneck kettle and a coffee grinder for pour-over', note: 'outside a computers/office/audio mandate: watch the agent explain' },
+  { goal: 'A two-hour product photo shoot for 20 items', kind: 'negotiate', note: 'two agents negotiate the price, you approve, PayPal settles' },
 ]
 
 export default function Dashboard() {
@@ -220,6 +221,7 @@ const REPEAT_OPTIONS = [
 function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; missions: Mission[]; onStarted: () => void }) {
   const [goal, setGoal] = useState('')
   const [repeat, setRepeat] = useState(0)
+  const [kind, setKind] = useState('buy')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const start = async (e: FormEvent) => {
@@ -228,7 +230,7 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
     setBusy(true)
     setErr('')
     try {
-      const ms = await api.createMission(m.id, goal.trim(), repeat)
+      const ms = await api.createMission(m.id, goal.trim(), repeat, kind)
       onStarted()
       navigate(`#/missions/${ms.id}`)
     } catch (e: any) {
@@ -257,7 +259,11 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
         ) : null}
       </div>
       <form className="goal-form" onSubmit={start}>
-        <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the agent buy? e.g. a 27-inch 4K USB-C monitor" aria-label={`Goal for the agent under ${m.name}`} />
+        <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder={kind === 'negotiate' ? 'What service should the agents negotiate? e.g. logo design, three concepts' : 'What should the agent buy? e.g. a 27-inch 4K USB-C monitor'} aria-label={`Goal for the agent under ${m.name}`} />
+        <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Mission kind" title="Buy: research a catalog and propose a cart. Negotiate: a buyer agent haggles with a seller agent for a service; the agreed price becomes the proposal.">
+          <option value="buy">Buy a product</option>
+          <option value="negotiate">Hire a service (agents negotiate)</option>
+        </select>
         <select value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} aria-label="Repeat schedule" title="Standing order: run this goal again on a schedule, inside the same mandate">
           {REPEAT_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
         </select>
@@ -265,7 +271,7 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
       </form>
       <div className="suggestions">
         {DEMO_GOALS.map((g) => (
-          <button key={g.goal} type="button" className="link" title={g.note} onClick={() => setGoal(g.goal)}>
+          <button key={g.goal} type="button" className="link" title={g.note} onClick={() => { setGoal(g.goal); setKind(g.kind ?? 'buy') }}>
             {g.goal}
             {g.note && <span className="muted"> ({g.note})</span>}
           </button>

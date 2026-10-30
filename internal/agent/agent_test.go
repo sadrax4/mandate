@@ -171,3 +171,37 @@ func TestResumeAfterRejection(t *testing.T) {
 		t.Fatalf("status=%s turns=%d", m.Status, m.Turns)
 	}
 }
+
+func TestNegotiationConvergesInsideTheMandate(t *testing.T) {
+	md := mandate.Mandate{Name: "services", Currency: "USD", TotalBudget: 500, MaxPerItem: 150}
+	sh, st, id := setup(t, md, "a two-hour product photo shoot for 20 items")
+	sh.Negotiate(context.Background(), id, "")
+	m, _ := st.GetMission(id)
+	if m.Status != store.MissionAwaitingApproval || m.Negotiation == nil || m.Negotiation.Outcome != "agreed" {
+		t.Fatalf("status=%s neg=%+v err=%s", m.Status, m.Negotiation, m.Error)
+	}
+	if m.Negotiation.AgreedPrice > 150 || m.Negotiation.AgreedPrice <= 0 || m.Negotiation.ListPrice <= 150 {
+		t.Fatalf("agreed %.2f list %.2f", m.Negotiation.AgreedPrice, m.Negotiation.ListPrice)
+	}
+	if len(m.Negotiation.Rounds) < 3 {
+		t.Fatalf("too few rounds: %+v", m.Negotiation.Rounds)
+	}
+	for _, r := range m.Negotiation.Rounds {
+		if r.Party == "buyer" && r.Price > 150 {
+			t.Fatalf("buyer exceeded the limit: %+v", r)
+		}
+	}
+	ps := st.ListProposals(id)
+	if len(ps) != 1 || ps[0].Cart.Items[0].Category != "services" || ps[0].Cart.Items[0].UnitPrice != m.Negotiation.AgreedPrice {
+		t.Fatalf("proposal = %+v", ps)
+	}
+
+	// a mandate that does not allow services: the deal is blocked and a fix is suggested
+	md2 := mandate.Mandate{Name: "computers only", Currency: "USD", TotalBudget: 500, MaxPerItem: 150, AllowedCategories: []string{"computers"}}
+	sh2, st2, id2 := setup(t, md2, "logo design, three concepts")
+	sh2.Negotiate(context.Background(), id2, "")
+	m2, _ := st2.GetMission(id2)
+	if m2.Status != store.MissionNoProposal || m2.Suggestion == nil || m2.Suggestion.Field != "allowed_categories" {
+		t.Fatalf("status=%s suggestion=%+v", m2.Status, m2.Suggestion)
+	}
+}

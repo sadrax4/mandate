@@ -59,6 +59,11 @@ type Mission struct {
 	// RetryOf links a mission started by applying a suggestion to the
 	// mission that produced it.
 	RetryOf string `json:"retry_of,omitempty"`
+	// Kind is "buy" (default: research a catalog and propose a cart) or
+	// "negotiate" (a buyer agent haggles with a seller agent for a service
+	// and the agreed price becomes the proposal).
+	Kind        string       `json:"kind,omitempty"`
+	Negotiation *Negotiation `json:"negotiation,omitempty"`
 	// Standing orders: RepeatDays > 0 makes this mission re-run its goal
 	// every RepeatDays days (NextRunAt is the next scheduled run, LastRunID
 	// the most recent run). Each run is a normal mission with RepeatOf set.
@@ -68,6 +73,28 @@ type Mission struct {
 	RepeatOf   string     `json:"repeat_of,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
+// Negotiation is the transcript of a buyer agent and a seller agent
+// settling on a price for a service, inside the buyer's mandate.
+type Negotiation struct {
+	Service     string             `json:"service"`
+	Seller      string             `json:"seller"`
+	ListPrice   float64            `json:"list_price"`
+	Limit       float64            `json:"limit"` // the buyer agent's hard ceiling, from the mandate
+	Rounds      []NegotiationRound `json:"rounds"`
+	Outcome     string             `json:"outcome,omitempty"` // agreed | no_deal
+	AgreedPrice float64            `json:"agreed_price,omitempty"`
+}
+
+// NegotiationRound is one move by either party.
+type NegotiationRound struct {
+	Round   int       `json:"round"`
+	Party   string    `json:"party"` // buyer | seller
+	Move    string    `json:"move"`  // offer | counter | accept | decline | walk_away
+	Price   float64   `json:"price,omitempty"`
+	Message string    `json:"message"`
+	At      time.Time `json:"at"`
 }
 
 // Suggestion is a proposed change to one mandate field. For the numeric

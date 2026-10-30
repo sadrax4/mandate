@@ -232,6 +232,7 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		MandateID  string `json:"mandate_id"`
 		Goal       string `json:"goal"`
 		RepeatDays int    `json:"repeat_days"`
+		Kind       string `json:"kind"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, 400, err.Error())
@@ -246,6 +247,13 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "repeat_days must be between 1 and 365 (0 = run once)")
 		return
 	}
+	if in.Kind == "" {
+		in.Kind = "buy"
+	}
+	if in.Kind != "buy" && in.Kind != "negotiate" {
+		writeErr(w, 400, "kind must be buy or negotiate")
+		return
+	}
 	if len(in.Goal) > 2000 {
 		writeErr(w, 400, "goal is too long")
 		return
@@ -258,7 +266,7 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
 	}
-	m := &store.Mission{ID: store.NewID("msn"), MandateID: in.MandateID, Goal: in.Goal, Status: store.MissionRunning, CreatedAt: time.Now()}
+	m := &store.Mission{ID: store.NewID("msn"), MandateID: in.MandateID, Goal: in.Goal, Status: store.MissionRunning, Kind: in.Kind, CreatedAt: time.Now()}
 	if in.RepeatDays > 0 {
 		next := time.Now().Add(time.Duration(in.RepeatDays) * 24 * time.Hour)
 		m.RepeatDays, m.NextRunAt = in.RepeatDays, &next
@@ -268,8 +276,17 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 	if m.RepeatDays > 0 {
 		s.st.AddEvent(m.ID, "status", fmt.Sprintf("standing order: this goal runs again every %d day(s), next on %s; each run is checked against the mandate like any other", m.RepeatDays, m.NextRunAt.UTC().Format("2006-01-02")), map[string]any{"repeat_days": m.RepeatDays, "next_run_at": m.NextRunAt})
 	}
-	go s.shopper.Run(context.Background(), m.ID)
+	s.startAgent(m, "")
 	writeJSON(w, 201, m)
+}
+
+// startAgent runs a mission in the background according to its kind.
+func (s *Server) startAgent(m *store.Mission, feedback string) {
+	if m.Kind == "negotiate" {
+		go s.shopper.Negotiate(context.Background(), m.ID, feedback)
+		return
+	}
+	go s.shopper.Run(context.Background(), m.ID)
 }
 
 // --- standing orders ---
@@ -283,7 +300,7 @@ func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, er
 	if !s.allowMissionStart() {
 		return nil, &httpError{429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)}
 	}
-	run := &store.Mission{ID: store.NewID("msn"), MandateID: parent.MandateID, Goal: parent.Goal, Status: store.MissionRunning, RepeatOf: parent.ID, CreatedAt: time.Now()}
+	run := &store.Mission{ID: store.NewID("msn"), MandateID: parent.MandateID, Goal: parent.Goal, Status: store.MissionRunning, Kind: parent.Kind, RepeatOf: parent.ID, CreatedAt: time.Now()}
 	s.st.PutMission(run)
 	next := time.Now().Add(time.Duration(parent.RepeatDays) * 24 * time.Hour)
 	_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) {
@@ -294,7 +311,7 @@ func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, er
 	})
 	s.st.AddEvent(parent.ID, "status", fmt.Sprintf("standing order run started (%s): mission %s; next run on %s", why, run.ID, next.UTC().Format("2006-01-02")), map[string]any{"run_mission_id": run.ID, "next_run_at": next})
 	s.st.AddEvent(run.ID, "status", "run of standing order "+parent.ID+" ("+why+"): "+parent.Goal, map[string]any{"repeat_of": parent.ID})
-	go s.shopper.Run(context.Background(), run.ID)
+	s.startAgent(run, "")
 	return run, nil
 }
 
@@ -419,12 +436,12 @@ func (s *Server) handleApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.payMu.Unlock()
-	retry := &store.Mission{ID: store.NewID("msn"), MandateID: ms.MandateID, Goal: ms.Goal, Status: store.MissionRunning, RetryOf: ms.ID, CreatedAt: time.Now()}
+	retry := &store.Mission{ID: store.NewID("msn"), MandateID: ms.MandateID, Goal: ms.Goal, Status: store.MissionRunning, Kind: ms.Kind, RetryOf: ms.ID, CreatedAt: time.Now()}
 	s.st.PutMission(retry)
 	_, _ = s.st.UpdateMission(ms.ID, func(m *store.Mission) { m.Suggestion.AppliedMissionID = retry.ID })
 	s.st.AddEvent(ms.ID, "status", "human amended the mandate ("+desc+") and retried the goal as mission "+retry.ID, map[string]any{"retry_mission_id": retry.ID, "change": desc})
 	s.st.AddEvent(retry.ID, "status", "retry of mission "+ms.ID+" after the human amended the mandate: "+desc, map[string]any{"retry_of": ms.ID, "change": desc})
-	go s.shopper.Run(context.Background(), retry.ID)
+	s.startAgent(retry, "")
 	writeJSON(w, 201, map[string]any{"mission": retry, "change": desc})
 }
 
@@ -739,7 +756,11 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	})
 	s.payMu.Unlock()
 	s.st.AddEvent(p.MissionID, "rejected", "human rejected the proposal: "+in.Reason, map[string]any{"proposal_id": p.ID})
-	go s.shopper.Resume(context.Background(), p.MissionID, in.Reason)
+	if ms, err := s.st.GetMission(p.MissionID); err == nil && ms.Kind == "negotiate" {
+		go s.shopper.Negotiate(context.Background(), p.MissionID, in.Reason)
+	} else {
+		go s.shopper.Resume(context.Background(), p.MissionID, in.Reason)
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

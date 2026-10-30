@@ -75,6 +75,18 @@ await page.waitForSelector('text=Standing orders', { timeout: 10000 })
 await page.waitForTimeout(800)
 await page.screenshot({ path: `${S}/11-standing-orders.png`, fullPage: true })
 
+// agent-to-agent: a buyer agent negotiates a service with a seller agent, inside the mandate
+const svc = await (await page.request.post(base + '/api/mandates', { data: { name: 'Freelance', currency: 'USD', total_budget: 600, max_per_item: 200 } })).json()
+const nm = await (await page.request.post(base + '/api/missions', { data: { mandate_id: svc.id, goal: 'a two-hour product photo shoot for 20 items', kind: 'negotiate' } })).json()
+await page.goto(base + '/#/missions/' + nm.id)
+await page.waitForSelector('text=Agent-to-agent negotiation', { timeout: 20000 })
+await page.waitForSelector('text=deal at', { timeout: 20000 })
+await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
+await page.waitForTimeout(1200)
+await page.screenshot({ path: `${S}/13-negotiation.png`, fullPage: true })
+const nd = await (await page.request.get(base + '/api/missions/' + nm.id)).json()
+if (nd.mission.negotiation.agreed_price > 200) throw new Error('deal above the mandate limit: ' + nd.mission.negotiation.agreed_price)
+
 // spending insights: charts and the purchased-items grid
 await page.goto(base + '/#/insights')
 await page.waitForSelector('text=Spending insights')

@@ -865,3 +865,34 @@ func TestForgetSavedPaymentRevokesOneClick(t *testing.T) {
 		t.Fatal("expected a checkout after forgetting the saved account")
 	}
 }
+
+func TestNegotiatedServiceIsApprovedAndPaidLikeAnyCart(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Freelance", "total_budget": 600, "max_per_item": 200}, &md)
+	var ms map[string]any
+	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "a two-hour product photo shoot", "kind": "negotiate"}, &ms); code != 201 {
+		t.Fatalf("create: %d %v", code, ms)
+	}
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingApproval)
+	m := out["mission"].(map[string]any)
+	neg := m["negotiation"].(map[string]any)
+	if m["kind"] != "negotiate" || neg["outcome"] != "agreed" || neg["agreed_price"].(float64) > 200 {
+		t.Fatalf("mission = %v", m)
+	}
+	pid := out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+	var ap map[string]any
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve: %d %v", code, ap)
+	}
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(ms["id"].(string), store.MissionPaid)
+	var ledger []map[string]any
+	e.get("/api/ledger", &ledger)
+	if len(ledger) != 1 || ledger[0]["amount"].(float64) != neg["agreed_price"].(float64) {
+		t.Fatalf("ledger = %v", ledger)
+	}
+	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "x", "kind": "auction"}, &ms); code != 400 {
+		t.Fatalf("bad kind: %d", code)
+	}
+}

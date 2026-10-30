@@ -18,6 +18,9 @@ export type Mandate = {
   vaulted_at?: string
 }
 
+export type NegotiationRound = { round: number; party: string; move: string; price?: number; message: string; at: string }
+export type Negotiation = { service: string; seller: string; list_price: number; limit: number; rounds: NegotiationRound[]; outcome?: string; agreed_price?: number }
+
 export type Mission = {
   id: string
   mandate_id: string
@@ -34,6 +37,8 @@ export type Mission = {
   next_run_at?: string
   last_run_id?: string
   repeat_of?: string
+  kind?: string
+  negotiation?: Negotiation
   created_at: string
   updated_at: string
 }
@@ -196,8 +201,8 @@ export const api = {
   createMandate: (m: Partial<Mandate>) => req<Mandate>('/api/mandates', { method: 'POST', body: JSON.stringify(m) }),
   missions: () => req<Mission[]>('/api/missions'),
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
-  createMission: (mandateId: string, goal: string, repeatDays = 0) =>
-    req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id: mandateId, goal, repeat_days: repeatDays }) }),
+  createMission: (mandateId: string, goal: string, repeatDays = 0, kind = 'buy') =>
+    req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id: mandateId, goal, repeat_days: repeatDays, kind }) }),
   forgetPayment: (mandateId: string) => req<Mandate>(`/api/mandates/${mandateId}/forget-payment`, { method: 'POST' }),
   runNow: (missionId: string) => req<Mission>(`/api/missions/${missionId}/run-now`, { method: 'POST' }),
   stopRepeat: (missionId: string) => req<Mission>(`/api/missions/${missionId}/stop-repeat`, { method: 'POST' }),

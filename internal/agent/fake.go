@@ -19,7 +19,15 @@ type Fake struct{}
 func (Fake) Name() string { return "fake" }
 
 // NewSession implements Provider.
-func (Fake) NewSession(string) Session { return &fakeSession{} }
+func (Fake) NewSession(system string) Session {
+	switch {
+	case strings.HasPrefix(system, buyerMarker):
+		return &fakeNegotiator{role: "buyer", limit: promptNumber(system, "Your hard limit is")}
+	case strings.HasPrefix(system, sellerMarker):
+		return &fakeNegotiator{role: "seller", floor: promptNumber(system, "Your absolute floor is"), list: promptNumber(system, "Your asking price is")}
+	}
+	return &fakeSession{}
+}
 
 type fakeSession struct {
 	goal     string
@@ -334,4 +342,83 @@ func suggestFix(decisionJSON string, choices []choice) (field string, value any,
 		}
 	}
 	return "", nil, ""
+}
+
+// fakeNegotiator is the scripted counterpart of the negotiation prompts: a
+// buyer that opens low and converges to its limit, a seller that concedes
+// in decreasing steps down to its floor.
+type fakeNegotiator struct {
+	role                 string
+	limit, floor, list   float64
+	lastOffer, lastPrice float64
+	round                int
+}
+
+var reMoney = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)`)
+
+func promptNumber(s, label string) float64 {
+	i := strings.Index(s, label)
+	if i < 0 {
+		return 0
+	}
+	if m := reMoney.FindStringSubmatch(s[i+len(label):]); m != nil {
+		v, _ := strconv.ParseFloat(m[1], 64)
+		return v
+	}
+	return 0
+}
+
+func (n *fakeNegotiator) Send(ctx context.Context, userText string, tools []Tool, emit func(Event)) (string, error) {
+	n.round++
+	call := func(name string, in map[string]any) {
+		for _, t := range tools {
+			if t.Name == name {
+				b, _ := json.Marshal(in)
+				emit(Event{Type: "tool_call", Message: name, Data: map[string]any{"tool": name, "input": json.RawMessage(b)}})
+				_, _ = t.Run(ctx, b)
+				return
+			}
+		}
+	}
+	if n.role == "buyer" {
+		price := promptNumber(userText, "Their current price:")
+		if price <= n.limit && (n.round >= 4 || price-n.lastOffer < 0.08*price) {
+			call("accept_offer", map[string]any{"price": price, "message": "That works, we have a deal."})
+			return "", nil
+		}
+		offer := n.lastOffer + 0.5*(price-n.lastOffer)
+		if n.lastOffer == 0 {
+			offer = 0.6 * price
+			if offer > 0.75*n.limit {
+				offer = 0.75 * n.limit
+			}
+		}
+		if offer > n.limit {
+			offer = n.limit
+		}
+		offer = float64(int(offer*100)) / 100
+		n.lastOffer = offer
+		msg := "That is above what I can justify for this; I can offer this."
+		if n.round > 1 {
+			msg = "I appreciate you moving; this is closer to the value I see."
+		}
+		call("make_offer", map[string]any{"price": offer, "message": msg})
+		return "", nil
+	}
+	offer := promptNumber(userText, "Their offer:")
+	if n.lastPrice == 0 {
+		n.lastPrice = n.list
+	}
+	if offer >= n.floor && (n.round >= 2 || offer >= 0.95*n.list) {
+		call("accept_offer", map[string]any{"price": offer, "message": "Agreed, I can do it for that."})
+		return "", nil
+	}
+	counter := n.lastPrice - 0.4*(n.lastPrice-offer)
+	if counter < n.floor {
+		counter = n.floor
+	}
+	counter = float64(int(counter*100)) / 100
+	n.lastPrice = counter
+	call("counter_offer", map[string]any{"price": counter, "message": "My rate reflects the time and gear involved, but I can come down to this."})
+	return "", nil
 }

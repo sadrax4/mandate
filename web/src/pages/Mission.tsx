@@ -5,8 +5,9 @@ import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
 import { StandingOrderButtons } from './Dashboard'
+import { NegotiationCard } from '../components/Negotiation'
 
-const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'message']
+const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'negotiation', 'message']
 const FIELD_LABEL: Record<string, string> = {
   total_budget: 'total budget',
   max_per_item: 'per-item cap',
@@ -48,7 +49,7 @@ const CHECK_LABEL: Record<string, string> = {
 }
 const ICON: Record<string, string> = {
   status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
-  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒', suggestion: '💡',
+  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒', suggestion: '💡', negotiation: '🤝',
 }
 
 type Candidate = Product & { query: string }
@@ -268,6 +269,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
         <div>
           {mission.status === 'failed' && <div className="alert bad">The agent failed: {mission.error}</div>}
+          {mission.negotiation && <NegotiationCard negotiation={mission.negotiation} currency={mandate?.currency ?? 'USD'} running={mission.status === 'running'} />}
           {mission.status === 'no_proposal' && (
             <Card title="No proposal" className="mt-0">
               <p className="muted" style={{ marginTop: 0 }}>The agent decided the goal cannot be met inside this mandate.</p>
@@ -422,6 +424,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         </div>
       </div>
 
+      {mission.kind !== 'negotiate' && (
       <Card
         title="Products the agent considered"
         className="mt"
@@ -437,6 +440,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
           <Grid<Candidate> rowData={candidates} columnDefs={candidateCols} getRowId={(p) => p.data.id} rowClassRules={rowClassRules} pagination={candidates.length > 20} paginationPageSize={20} />
         )}
       </Card>
+      )}
     </div>
   )
 }

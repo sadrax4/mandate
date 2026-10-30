@@ -358,55 +358,8 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 				if err != nil {
 					return "", err
 				}
-				d := md.Evaluate(cart)
-				p := &store.Proposal{ID: store.NewID("prop"), MissionID: missionID, MandateID: md.ID, Cart: cart, Decision: d, Summary: strings.TrimSpace(in.Summary), CreatedAt: time.Now()}
-				switch {
-				case !d.Allowed:
-					p.Status = store.ProposalRejectedByPolicy
-				case d.RequiresApproval:
-					p.Status = store.ProposalPending
-				default:
-					p.Status = store.ProposalAutoApproved
-				}
-				s.Store.PutProposal(p)
-				if p.Status == store.ProposalRejectedByPolicy {
-					s.Store.AddEvent(missionID, "policy_block", "proposal blocked by the mandate: "+checkMessage(d), map[string]any{"proposal_id": p.ID, "decision": d})
-					return mustJSON(map[string]any{"proposal_id": p.ID, "status": p.Status, "decision": d}), nil
-				}
-				_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
-					m.ProposalID = p.ID
-					if p.Status == store.ProposalPending {
-						m.Status = store.MissionAwaitingApproval
-					}
-				})
-				s.Store.AddEvent(missionID, "proposal", fmt.Sprintf("proposal %s created (%s): %d item(s), total %.2f %s", p.ID, p.Status, len(cart.Items), d.Total, d.Currency), map[string]any{"proposal_id": p.ID, "status": p.Status, "total": d.Total})
-				if s.OnProposal != nil {
-					// For auto-approved proposals the hook creates (or completes)
-					// the payment and moves the mission to awaiting_payment or paid
-					// itself, so readers never see the status before the order exists.
-					if err := s.OnProposal(ctx, p); err != nil {
-						s.Store.AddEvent(missionID, "error", "post-proposal hook failed: "+err.Error(), nil)
-					}
-				}
-				if p.Status == store.ProposalAutoApproved {
-					// No order could be created: let a human approve it from the UI.
-					_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
-						if m.Status == store.MissionRunning {
-							m.Status = store.MissionAwaitingApproval
-						}
-					})
-				}
-				status, note := p.Status, "a human must approve before anything is paid"
-				if cur, err := s.Store.GetProposal(p.ID); err == nil {
-					status = cur.Status
-				}
-				switch status {
-				case store.ProposalPaid:
-					note = "under the auto-approve threshold: paid at once with the PayPal account saved on this mandate, no checkout needed"
-				case store.ProposalApproved, store.ProposalAutoApproved:
-					note = "under the auto-approve threshold: a PayPal order was created and the buyer completes checkout"
-				}
-				return mustJSON(map[string]any{"proposal_id": p.ID, "status": status, "payment": note, "decision": d}), nil
+				out, _ := s.createProposal(ctx, missionID, md, cart, in.Summary)
+				return mustJSON(out), nil
 			},
 		},
 		{
@@ -446,6 +399,61 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 			},
 		},
 	}
+}
+
+// createProposal evaluates a cart, stores the proposal, moves the mission
+// along and runs the payment hook. It returns the tool result the model sees
+// and the stored proposal. Used by propose_cart and by negotiated deals.
+func (s *Shopper) createProposal(ctx context.Context, missionID string, md *mandate.Mandate, cart mandate.Cart, summary string) (map[string]any, *store.Proposal) {
+	d := md.Evaluate(cart)
+	p := &store.Proposal{ID: store.NewID("prop"), MissionID: missionID, MandateID: md.ID, Cart: cart, Decision: d, Summary: strings.TrimSpace(summary), CreatedAt: time.Now()}
+	switch {
+	case !d.Allowed:
+		p.Status = store.ProposalRejectedByPolicy
+	case d.RequiresApproval:
+		p.Status = store.ProposalPending
+	default:
+		p.Status = store.ProposalAutoApproved
+	}
+	s.Store.PutProposal(p)
+	if p.Status == store.ProposalRejectedByPolicy {
+		s.Store.AddEvent(missionID, "policy_block", "proposal blocked by the mandate: "+checkMessage(d), map[string]any{"proposal_id": p.ID, "decision": d})
+		return map[string]any{"proposal_id": p.ID, "status": p.Status, "decision": d}, p
+	}
+	_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
+		m.ProposalID = p.ID
+		if p.Status == store.ProposalPending {
+			m.Status = store.MissionAwaitingApproval
+		}
+	})
+	s.Store.AddEvent(missionID, "proposal", fmt.Sprintf("proposal %s created (%s): %d item(s), total %.2f %s", p.ID, p.Status, len(cart.Items), d.Total, d.Currency), map[string]any{"proposal_id": p.ID, "status": p.Status, "total": d.Total})
+	if s.OnProposal != nil {
+		// For auto-approved proposals the hook creates (or completes) the
+		// payment and moves the mission to awaiting_payment or paid itself, so
+		// readers never see the status before the order exists.
+		if err := s.OnProposal(ctx, p); err != nil {
+			s.Store.AddEvent(missionID, "error", "post-proposal hook failed: "+err.Error(), nil)
+		}
+	}
+	if p.Status == store.ProposalAutoApproved {
+		// No order could be created: let a human approve it from the UI.
+		_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
+			if m.Status == store.MissionRunning {
+				m.Status = store.MissionAwaitingApproval
+			}
+		})
+	}
+	status, note := p.Status, "a human must approve before anything is paid"
+	if cur, err := s.Store.GetProposal(p.ID); err == nil {
+		status = cur.Status
+	}
+	switch status {
+	case store.ProposalPaid:
+		note = "under the auto-approve threshold: paid at once with the PayPal account saved on this mandate, no checkout needed"
+	case store.ProposalApproved, store.ProposalAutoApproved:
+		note = "under the auto-approve threshold: a PayPal order was created and the buyer completes checkout"
+	}
+	return map[string]any{"proposal_id": p.ID, "status": status, "payment": note, "decision": d}, p
 }
 
 func (s *Shopper) buildCart(ctx context.Context, missionID string, items []cartItemInput) (*mandate.Mandate, mandate.Cart, error) {

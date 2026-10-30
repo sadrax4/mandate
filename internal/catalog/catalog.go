@@ -56,7 +56,7 @@ var ErrNotFound = errors.New("catalog: product not found")
 // results are mapped onto these where possible so mandate rules stay simple.
 var Categories = []string{
 	"electronics", "computers", "audio", "home", "kitchen", "office",
-	"fitness", "clothing", "books", "toys", "other",
+	"fitness", "clothing", "books", "toys", "services", "other",
 }
 
 // NormaliseCategory maps free-form category text onto one of Categories.

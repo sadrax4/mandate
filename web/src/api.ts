@@ -30,6 +30,10 @@ export type Mission = {
   turns: number
   suggestion?: { field: string; value: any; reason: string; applied_mission_id?: string }
   retry_of?: string
+  repeat_days?: number
+  next_run_at?: string
+  last_run_id?: string
+  repeat_of?: string
   created_at: string
   updated_at: string
 }
@@ -192,8 +196,10 @@ export const api = {
   createMandate: (m: Partial<Mandate>) => req<Mandate>('/api/mandates', { method: 'POST', body: JSON.stringify(m) }),
   missions: () => req<Mission[]>('/api/missions'),
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
-  createMission: (mandate_id: string, goal: string) =>
-    req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id, goal }) }),
+  createMission: (mandateId: string, goal: string, repeatDays = 0) =>
+    req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id: mandateId, goal, repeat_days: repeatDays }) }),
+  runNow: (missionId: string) => req<Mission>(`/api/missions/${missionId}/run-now`, { method: 'POST' }),
+  stopRepeat: (missionId: string) => req<Mission>(`/api/missions/${missionId}/stop-repeat`, { method: 'POST' }),
   insights: () => req<Insights>('/api/insights'),
   applySuggestion: (missionId: string) =>
     req<{ mission: Mission; change: string }>(`/api/missions/${missionId}/apply-suggestion`, { method: 'POST' }),

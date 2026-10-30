@@ -92,6 +92,7 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 	}
 	s.initMCP()
 	s.routes()
+	go s.scheduler()
 	return s
 }
 
@@ -116,6 +117,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/missions/{id}", s.handleGetMission)
 	m.HandleFunc("GET /api/missions/{id}/events", s.handleEvents)
 	m.HandleFunc("POST /api/missions/{id}/apply-suggestion", s.handleApplySuggestion)
+	m.HandleFunc("POST /api/missions/{id}/run-now", s.handleRunNow)
+	m.HandleFunc("POST /api/missions/{id}/stop-repeat", s.handleStopRepeat)
 
 	m.HandleFunc("POST /api/proposals/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/proposals/{id}/reject", s.handleReject)
@@ -201,8 +204,9 @@ func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		MandateID string `json:"mandate_id"`
-		Goal      string `json:"goal"`
+		MandateID  string `json:"mandate_id"`
+		Goal       string `json:"goal"`
+		RepeatDays int    `json:"repeat_days"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, 400, err.Error())
@@ -211,6 +215,10 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 	in.Goal = strings.TrimSpace(in.Goal)
 	if in.Goal == "" {
 		writeErr(w, 400, "goal is required")
+		return
+	}
+	if in.RepeatDays < 0 || in.RepeatDays > 365 {
+		writeErr(w, 400, "repeat_days must be between 1 and 365 (0 = run once)")
 		return
 	}
 	if len(in.Goal) > 2000 {
@@ -226,10 +234,101 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m := &store.Mission{ID: store.NewID("msn"), MandateID: in.MandateID, Goal: in.Goal, Status: store.MissionRunning, CreatedAt: time.Now()}
+	if in.RepeatDays > 0 {
+		next := time.Now().Add(time.Duration(in.RepeatDays) * 24 * time.Hour)
+		m.RepeatDays, m.NextRunAt = in.RepeatDays, &next
+	}
 	s.st.PutMission(m)
 	s.st.AddEvent(m.ID, "status", "mission created: "+in.Goal, nil)
+	if m.RepeatDays > 0 {
+		s.st.AddEvent(m.ID, "status", fmt.Sprintf("standing order: this goal runs again every %d day(s), next on %s; each run is checked against the mandate like any other", m.RepeatDays, m.NextRunAt.UTC().Format("2006-01-02")), map[string]any{"repeat_days": m.RepeatDays, "next_run_at": m.NextRunAt})
+	}
 	go s.shopper.Run(context.Background(), m.ID)
 	writeJSON(w, 201, m)
+}
+
+// --- standing orders ---
+
+// startRun runs a standing order's goal once more as a new mission and
+// schedules the next run. It is used by the scheduler and by "Run now".
+func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, error) {
+	if parent.RepeatDays <= 0 {
+		return nil, &httpError{409, "this mission is not a standing order"}
+	}
+	if !s.allowMissionStart() {
+		return nil, &httpError{429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)}
+	}
+	run := &store.Mission{ID: store.NewID("msn"), MandateID: parent.MandateID, Goal: parent.Goal, Status: store.MissionRunning, RepeatOf: parent.ID, CreatedAt: time.Now()}
+	s.st.PutMission(run)
+	next := time.Now().Add(time.Duration(parent.RepeatDays) * 24 * time.Hour)
+	_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) {
+		m.LastRunID = run.ID
+		if m.RepeatDays > 0 {
+			m.NextRunAt = &next
+		}
+	})
+	s.st.AddEvent(parent.ID, "status", fmt.Sprintf("standing order run started (%s): mission %s; next run on %s", why, run.ID, next.UTC().Format("2006-01-02")), map[string]any{"run_mission_id": run.ID, "next_run_at": next})
+	s.st.AddEvent(run.ID, "status", "run of standing order "+parent.ID+" ("+why+"): "+parent.Goal, map[string]any{"repeat_of": parent.ID})
+	go s.shopper.Run(context.Background(), run.ID)
+	return run, nil
+}
+
+// runDueRepeats starts every standing order whose next run is due.
+func (s *Server) runDueRepeats(now time.Time) int {
+	started := 0
+	for _, m := range s.st.ListMissions("") {
+		if m.RepeatDays <= 0 || m.NextRunAt == nil || m.NextRunAt.After(now) {
+			continue
+		}
+		if _, err := s.startRun(m, "scheduled"); err != nil {
+			log.Printf("standing order %s: %v", m.ID, err)
+			continue
+		}
+		started++
+	}
+	return started
+}
+
+func (s *Server) scheduler() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for now := range t.C {
+		s.runDueRepeats(now)
+	}
+}
+
+func (s *Server) handleRunNow(w http.ResponseWriter, r *http.Request) {
+	m, err := s.st.GetMission(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 404, "mission not found")
+		return
+	}
+	run, err := s.startRun(m, "run now")
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			writeErr(w, he.code, he.msg)
+			return
+		}
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 201, run)
+}
+
+func (s *Server) handleStopRepeat(w http.ResponseWriter, r *http.Request) {
+	m, err := s.st.GetMission(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 404, "mission not found")
+		return
+	}
+	if m.RepeatDays == 0 {
+		writeErr(w, 409, "this mission is not a standing order")
+		return
+	}
+	m, _ = s.st.UpdateMission(m.ID, func(x *store.Mission) { x.RepeatDays, x.NextRunAt = 0, nil })
+	s.st.AddEvent(m.ID, "status", "standing order stopped by the human; no further runs", nil)
+	writeJSON(w, 200, m)
 }
 
 // allowMissionStart enforces the per-hour cap on agent runs (missions and

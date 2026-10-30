@@ -77,6 +77,38 @@ export default function Dashboard() {
         </div>
       )}
 
+      {missions.some((ms) => (ms.repeat_days ?? 0) > 0) && (
+        <Card title="Standing orders" className="mt" action={<span className="muted">goals the agent re-runs on a schedule, always inside the mandate</span>}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Goal</th>
+                <th>Mandate</th>
+                <th>Every</th>
+                <th>Next run</th>
+                <th>Last run</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {missions.filter((ms) => (ms.repeat_days ?? 0) > 0).map((ms) => {
+                const last = ms.last_run_id ? missions.find((x) => x.id === ms.last_run_id) : ms
+                return (
+                  <tr key={ms.id}>
+                    <td><a href={`#/missions/${ms.id}`}>{ms.goal}</a></td>
+                    <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
+                    <td>{ms.repeat_days} days</td>
+                    <td className="muted">{ms.next_run_at ? new Date(ms.next_run_at).toLocaleDateString() : '—'}</td>
+                    <td>{last ? <a href={`#/missions/${last.id}`}><Pill status={last.status} /></a> : '—'}</td>
+                    <td><StandingOrderButtons mission={ms} onChanged={load} /></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
       <Card title="Recent missions" className="mt">
         {missions.length === 0 ? (
           <Empty>No missions yet.</Empty>
@@ -107,8 +139,16 @@ export default function Dashboard() {
   )
 }
 
+const REPEAT_OPTIONS = [
+  { days: 0, label: 'Run once' },
+  { days: 7, label: 'Repeat weekly' },
+  { days: 30, label: 'Repeat monthly' },
+  { days: 90, label: 'Repeat quarterly' },
+]
+
 function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; missions: Mission[]; onStarted: () => void }) {
   const [goal, setGoal] = useState('')
+  const [repeat, setRepeat] = useState(0)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const start = async (e: FormEvent) => {
@@ -117,7 +157,7 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
     setBusy(true)
     setErr('')
     try {
-      const ms = await api.createMission(m.id, goal.trim())
+      const ms = await api.createMission(m.id, goal.trim(), repeat)
       onStarted()
       navigate(`#/missions/${ms.id}`)
     } catch (e: any) {
@@ -144,6 +184,9 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
       </div>
       <form className="goal-form" onSubmit={start}>
         <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the agent buy? e.g. a 27-inch 4K USB-C monitor" />
+        <select value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} title="Standing order: run this goal again on a schedule, inside the same mandate">
+          {REPEAT_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
+        </select>
         <button className="btn primary" disabled={busy || !goal.trim()}>{busy ? 'Starting…' : 'Start mission'}</button>
       </form>
       <div className="suggestions">
@@ -156,5 +199,34 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
       </div>
       {err && <div className="alert bad">{err}</div>}
     </Card>
+  )
+}
+
+export function StandingOrderButtons({ mission, onChanged }: { mission: Mission; onChanged: () => void }) {
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  const act = async (what: 'run' | 'stop') => {
+    setBusy(what)
+    setErr('')
+    try {
+      if (what === 'run') {
+        const run = await api.runNow(mission.id)
+        navigate(`#/missions/${run.id}`)
+      } else {
+        await api.stopRepeat(mission.id)
+      }
+      onChanged()
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy('')
+    }
+  }
+  return (
+    <span className="actions" style={{ gap: 6 }}>
+      <button className="btn ghost sm" onClick={() => act('run')} disabled={busy !== ''}>{busy === 'run' ? 'Starting…' : 'Run now'}</button>
+      <button className="btn ghost sm" onClick={() => act('stop')} disabled={busy !== ''}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
+      {err && <span className="alert bad" style={{ padding: '2px 8px' }}>{err}</span>}
+    </span>
   )
 }

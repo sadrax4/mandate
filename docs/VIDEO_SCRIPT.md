@@ -1,6 +1,6 @@
 # Demo video script (target 2:40, hard limit 3:00)
 
-Record on the live server (http://23.27.20.150:8080) so the badges read `PayPal: sandbox`, `Agent: claude-opus-5-5`, `Catalog: channel3`. 1920×1080, browser zoomed to 110%, no music. Narrate calmly; the product does the talking. Open the PayPal sandbox buyer login in a second tab beforehand so the login step takes seconds.
+Record on the live server (http://23.27.20.150:8080) so the badges read `PayPal: sandbox`, `Agent: claude-opus-5-5`, `Catalog: channel3`. Say (or caption) the words "PayPal" and "Claude" explicitly: judges look for both. Keep retailer logos and product photos out of frame (third-party trademark rule); product names in a grid are fine. 1920×1080, browser zoomed to 110%, no music. Narrate calmly; the product does the talking. Open the PayPal sandbox buyer login in a second tab beforehand so the login step takes seconds.
 
 | Time | Screen | Say |
 |---|---|---|

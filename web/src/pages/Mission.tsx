@@ -4,6 +4,7 @@ import { api, label, money, type CartItem, type Config, type Event, type Mission
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
+import { StandingOrderButtons } from './Dashboard'
 
 const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'message']
 const FIELD_LABEL: Record<string, string> = {
@@ -27,6 +28,17 @@ function describeSuggestion(s: { field: string; value: any }, currency: string) 
       return `set the ${FIELD_LABEL[s.field] ?? s.field} to ${typeof v === 'number' ? money(v, currency) : v}`
   }
 }
+/** Product name, linking to the merchant's page when the catalog provided one (Channel3 offers do). */
+function ProductCell(p: { value?: string; data?: { url?: string; source?: string } }) {
+  if (!p.value) return null
+  if (!p.data?.url) return <span>{p.value}</span>
+  return (
+    <a href={p.data.url} target="_blank" rel="noreferrer noopener" className="product-link" title="Open the merchant's product page" onClick={(e) => e.stopPropagation()}>
+      {p.value} <span className="ext">↗</span>
+    </a>
+  )
+}
+
 const CHECK_LABEL: Record<string, string> = {
   within_budget: 'within budget',
   under_per_item_cap: 'under per-item cap',
@@ -126,7 +138,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
   const candidateCols = useMemo<ColDef<Candidate>[]>(
     () => [
-      { field: 'title', headerName: 'Product', flex: 2.4, minWidth: 240 },
+      { field: 'title', headerName: 'Product', flex: 2.4, minWidth: 240, cellRenderer: ProductCell, tooltipField: 'title' },
       { field: 'merchant', headerName: 'Merchant', minWidth: 120 },
       { field: 'category', headerName: 'Category', minWidth: 110 },
       { field: 'price', headerName: 'Price', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: 100 },
@@ -279,6 +291,18 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
           {mission.retry_of && (
             <div className="muted" style={{ marginBottom: 10 }}>Retry of <a href={`#/missions/${mission.retry_of}`}>an earlier mission</a> after you amended the mandate.</div>
           )}
+          {(mission.repeat_days ?? 0) > 0 && (
+            <div className="suggestion-box" style={{ marginTop: 0, marginBottom: 12 }}>
+              <div>
+                <b>⟳ Standing order:</b> this goal runs again every {mission.repeat_days} days, next on {mission.next_run_at ? new Date(mission.next_run_at).toLocaleDateString() : '—'}.
+                <div className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>Every run is a new mission checked against the mandate; with a saved PayPal account and a cart under the threshold it completes without you.</div>
+              </div>
+              <StandingOrderButtons mission={mission} onChanged={refresh} />
+            </div>
+          )}
+          {mission.repeat_of && (
+            <div className="muted" style={{ marginBottom: 10 }}>Run of <a href={`#/missions/${mission.repeat_of}`}>a standing order</a>.</div>
+          )}
 
           {latest ? (
             <Card title={`Proposal ${proposals.length > 1 ? `#${proposals.length}` : ''}`} action={<Pill status={latest.status} />}>
@@ -398,7 +422,15 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         </div>
       </div>
 
-      <Card title="Products the agent considered" className="mt" action={<span className="muted">{candidates.length} products · highlighted rows are in the proposed cart</span>}>
+      <Card
+        title="Products the agent considered"
+        className="mt"
+        action={
+          <span className="muted">
+            {candidates.length} products{candidates[0]?.source === 'channel3' ? ' · live retail data via Channel3 (links open the merchant page)' : candidates[0]?.source === 'mock' ? ' · built-in demo catalog' : ''} · highlighted rows are in the proposed cart
+          </span>
+        }
+      >
         {candidates.length === 0 ? (
           <Empty>No searches yet.</Empty>
         ) : (

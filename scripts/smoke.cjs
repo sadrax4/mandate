@@ -63,6 +63,18 @@ await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
 const amended = await (await page.request.get(base + '/api/mandates/' + tight.id)).json()
 if (!amended.mandate.allowed_categories.includes('kitchen')) throw new Error('mandate was not amended: ' + JSON.stringify(amended.mandate.allowed_categories))
 
+// standing order: the goal re-runs on a schedule; "Run now" starts a linked run
+const so = await (await page.request.post(base + '/api/missions', { data: { mandate_id: audio.id, goal: 'noise cancelling headphones', repeat_days: 30 } })).json()
+await page.goto(base + '/#/missions/' + so.id)
+await page.waitForSelector('text=Standing order:', { timeout: 10000 })
+await page.click('button:has-text("Run now")')
+await page.waitForURL((u) => u.hash.startsWith('#/missions/') && !u.hash.includes(so.id), { timeout: 10000 })
+await page.waitForSelector('text=Run of', { timeout: 10000 })
+await page.goto(base + '/#/')
+await page.waitForSelector('text=Standing orders', { timeout: 10000 })
+await page.waitForTimeout(800)
+await page.screenshot({ path: `${S}/11-standing-orders.png`, fullPage: true })
+
 // spending insights: charts and the purchased-items grid
 await page.goto(base + '/#/insights')
 await page.waitForSelector('text=Spending insights')

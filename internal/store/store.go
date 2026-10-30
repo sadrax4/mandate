@@ -58,9 +58,16 @@ type Mission struct {
 	Suggestion *Suggestion `json:"suggestion,omitempty"`
 	// RetryOf links a mission started by applying a suggestion to the
 	// mission that produced it.
-	RetryOf   string    `json:"retry_of,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RetryOf string `json:"retry_of,omitempty"`
+	// Standing orders: RepeatDays > 0 makes this mission re-run its goal
+	// every RepeatDays days (NextRunAt is the next scheduled run, LastRunID
+	// the most recent run). Each run is a normal mission with RepeatOf set.
+	RepeatDays int        `json:"repeat_days,omitempty"`
+	NextRunAt  *time.Time `json:"next_run_at,omitempty"`
+	LastRunID  string     `json:"last_run_id,omitempty"`
+	RepeatOf   string     `json:"repeat_of,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // Suggestion is a proposed change to one mandate field. For the numeric

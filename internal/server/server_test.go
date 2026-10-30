@@ -23,6 +23,7 @@ type env struct {
 	st  *store.Store
 	cli *http.Client
 	pp  *paypal.Mock
+	srv *Server
 }
 
 func newEnv(t *testing.T) *env {
@@ -38,7 +39,7 @@ func newEnv(t *testing.T) *env {
 	ts.Config.Handler = srv.Handler()
 	t.Cleanup(ts.Close)
 	cli := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &env{t: t, ts: ts, st: st, cli: cli, pp: pp}
+	return &env{t: t, ts: ts, st: st, cli: cli, pp: pp, srv: srv}
 }
 
 // startAutoApproved creates a mandate with an auto-approve threshold and a
@@ -773,5 +774,67 @@ func TestApplySuggestionAmendsMandateAndRetries(t *testing.T) {
 	}
 	if code := e.post("/api/missions/"+ms["id"].(string)+"/apply-suggestion", nil, &applied); code != 409 {
 		t.Fatalf("second apply should be refused, got %d", code)
+	}
+}
+
+func TestStandingOrderRunsNowAndOnSchedule(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 500, "auto_approve_under": 0}, &md)
+	var ms map[string]any
+	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "aeropress coffee maker", "repeat_days": 30}, &ms); code != 201 {
+		t.Fatalf("create standing order: %d %v", code, ms)
+	}
+	id := ms["id"].(string)
+	if ms["repeat_days"].(float64) != 30 || ms["next_run_at"] == nil {
+		t.Fatalf("standing order fields missing: %v", ms)
+	}
+	e.waitMission(id, store.MissionAwaitingApproval) // the first run is the mission itself
+
+	var run map[string]any
+	if code := e.post("/api/missions/"+id+"/run-now", nil, &run); code != 201 {
+		t.Fatalf("run now: %d %v", code, run)
+	}
+	if run["repeat_of"] != id {
+		t.Fatalf("run not linked: %v", run)
+	}
+	e.waitMission(run["id"].(string), store.MissionAwaitingApproval)
+	var parent map[string]any
+	e.get("/api/missions/"+id, &parent)
+	if parent["mission"].(map[string]any)["last_run_id"] != run["id"] {
+		t.Fatalf("last run not recorded: %v", parent["mission"])
+	}
+
+	// the scheduler starts due runs and reschedules
+	mBefore, _ := e.st.GetMission(id)
+	if n := e.srv.runDueRepeats(time.Now()); n != 0 {
+		t.Fatalf("nothing should be due yet, started %d", n)
+	}
+	if n := e.srv.runDueRepeats(mBefore.NextRunAt.Add(time.Minute)); n != 1 {
+		t.Fatalf("expected one due run, started %d", n)
+	}
+	mAfter, _ := e.st.GetMission(id)
+	if !mAfter.NextRunAt.After(*mBefore.NextRunAt) {
+		t.Fatal("next run was not rescheduled")
+	}
+	var runs int
+	for _, m := range e.st.ListMissions("") {
+		if m.RepeatOf == id {
+			runs++
+		}
+	}
+	if runs != 2 {
+		t.Fatalf("runs = %d, want 2", runs)
+	}
+
+	// stopping ends the schedule
+	if code := e.post("/api/missions/"+id+"/stop-repeat", nil, &parent); code != 200 || parent["repeat_days"] != nil {
+		t.Fatalf("stop: %d %v", code, parent)
+	}
+	if n := e.srv.runDueRepeats(time.Now().Add(400 * 24 * time.Hour)); n != 0 {
+		t.Fatalf("stopped order still ran %d time(s)", n)
+	}
+	if code := e.post("/api/missions/"+id+"/run-now", nil, &run); code != 409 {
+		t.Fatalf("run-now after stop: %d", code)
 	}
 }

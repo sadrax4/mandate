@@ -21,6 +21,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 - **Approve** creates a PayPal order for the exact cart and sends you to PayPal checkout. On return the order is captured and the budget is updated. **Reject with feedback** and the agent revises in the same conversation.
 - When the goal cannot be met inside the mandate, the agent explains why and **suggests the smallest change** (a higher cap, an extra category, an unblocked merchant). It cannot change its own mandate; you click *Amend mandate & retry*.
 - **Save the account, pay with one click.** A mandate can ask PayPal to save your PayPal account at the first checkout (PayPal vault). After that, carts you approve are paid with one click, and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent.
+- **Standing orders:** start a mission with "repeat monthly" and the agent re-runs the goal on schedule, each run checked against the mandate; with a saved PayPal account and a cart under the threshold it completes with nobody in the loop, and it stops when the budget runs out.
 - A **ledger** lists every order with PayPal order and capture IDs, exportable to CSV, and an **Insights** page charts budget use per mandate, spend by category, merchant and day (AG Charts) over an AG Grid of every item bought.
 - **Ask about your orders.** An order assistant answers questions like "did my last order get captured?" or "any refunds or disputes?" from the ledger and from PayPal itself, through PayPal's hosted MCP server (the PayPal Agent Toolkit). Only PayPal's read-only tools are enabled for it: it can look, never pay.
 
@@ -49,7 +50,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 - PayPal's Orders v2 flow maps naturally onto "agent proposes, human approves": the approve link *is* the human gate.
 
 ### What's next for Mandate
-- Recurring mandates (a monthly budget the agent can keep spending against) and shared mandates for teams.
+- Shared mandates for teams, with per-person limits inside one budget.
 - Multi-currency mandates, Pay Later at checkout, and the PayPal Agent Toolkit for invoices and disputes.
 
 ## Built with

@@ -134,6 +134,7 @@ Rules:
 - You cannot and must not create, pay, capture, refund, cancel or modify anything. If asked to, explain that money only moves through human approval in Mandate.
 - Answer in plain text with short bullet lists. Quote IDs, amounts and dates exactly. Never invent data: if neither the ledger nor PayPal has it, say so.
 - Keep answers short: lead with the answer, then the evidence (which ledger rows or PayPal results you used).
+- If a PayPal tool returns an error or nothing useful, say so in one line and answer from the ledger; never stall on a failing tool.
 - Amounts in the ledger are in the mandate's currency; PayPal's sandbox environment is a test environment, so payer accounts look like sb-xxxx@personal.example.com.`
 
 type askRequest struct {

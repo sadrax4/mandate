@@ -27,8 +27,9 @@ Agentic commerce only works if people can delegate purchases without handing an 
 5. **Pay with PayPal.** Approval creates a PayPal order (Orders v2, `intent=CAPTURE`) for the exact cart, reserves the budget, and sends the buyer to PayPal checkout. On return the order is captured and the mandate's spent total is updated. Cancelling at PayPal releases the reservation.
 6. **Save the account, pay with one click.** A mandate can ask PayPal to save the buyer's PayPal account at the first checkout (PayPal vault). From then on, carts you approve are paid with one click and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent. The agent still has no payment tool.
 7. **Audit.** The ledger lists every order with mission, mandate, amount, status, PayPal order ID, capture ID, payer and whether it went through checkout or the saved account, sortable and filterable.
-8. **See where the money went.** The Insights page charts budget use per mandate, spend by category, by merchant and per day (AG Charts), over an AG Grid of every purchased line item with column groups, floating filters, a quick filter and CSV export.
-9. **Ask about your orders.** An order assistant on the ledger page answers questions ("did my last order get captured?", "what did I spend this week?", "any refunds or disputes?") from the ledger and from PayPal itself, through **PayPal's hosted MCP server** (the PayPal Agent Toolkit) connected with the Anthropic MCP connector. Only PayPal's read-only tools are enabled for it; it can look, never pay.
+8. **Standing orders.** Start a mission with *Repeat monthly* and the goal runs again on schedule ("coffee beans every 30 days"): each run is a new mission checked against the mandate like any other, so with a saved PayPal account and a cart under the threshold it completes with nobody in the loop, and it stops the moment the budget runs out. *Run now* and *Stop* are one click.
+9. **See where the money went.** The Insights page charts budget use per mandate, spend by category, by merchant and per day (AG Charts), over an AG Grid of every purchased line item with column groups, floating filters, a quick filter and CSV export.
+10. **Ask about your orders.** An order assistant on the ledger page answers questions ("did my last order get captured?", "what did I spend this week?", "any refunds or disputes?") from the ledger and from PayPal itself, through **PayPal's hosted MCP server** (the PayPal Agent Toolkit) connected with the Anthropic MCP connector. Only PayPal's read-only tools are enabled for it; it can look, never pay.
 
 Two independent gates protect the money: the policy engine (re-run at approval time, because the budget may have moved) and the buyer's own PayPal consent, given at checkout for every order, or once at the first checkout when the account is saved. Carts under the auto-approve threshold skip the first gate but never the second.
 
@@ -223,7 +224,7 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 
 - **PayPal**: Orders v2 (create, capture, get), saved payment methods (vault), verified webhooks, OAuth2, sandbox checkout, and the hosted PayPal MCP server (Agent Toolkit) for the read-only order assistant. Central to the product: it is the only way money moves.
 - **AG Grid** (Community) and **AG Charts** (Community): the products-considered grid, the proposal item grid, the ledger and the purchased-items grid (sorting, column groups, floating filters, quick filter, custom cell renderers, pagination, CSV export, Theming API for light and dark mode), plus the Insights charts (stacked horizontal bars for budget use, bars by category and day, a donut by merchant) with tooltips and formatted axes.
-- **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`): `POST /v1/search` with price, availability and condition filters and locale config, `GET /v1/products/{id}` for details. Each product is normalised to its cheapest in-stock offer (merchant domain, buy URL, price), with brand, cross-merchant ratings, category path, structured attributes and key features passed through to the agent.
+- **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`): `POST /v1/search` with price, availability and condition filters and locale config, `GET /v1/products/{id}` for details. Each product is normalised to its cheapest in-stock offer (merchant domain, buy URL, price), with brand, cross-merchant ratings, category path, structured attributes and key features passed through to the agent. In the UI every candidate links to the merchant's product page and the proposal carries the Channel3 product IDs through to the PayPal order items.
 - **Render**: `render.yaml` and Docker image for one-click deployment.
 
 ## Security notes and limits
@@ -238,7 +239,7 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 
 ## What's next
 
-- Recurring mandates (a monthly budget the agent keeps spending against) and shared mandates for teams.
+- Shared mandates for teams, with per-person limits inside one budget.
 - Multi-currency mandates and Pay Later options at checkout.
 - Let the order assistant draft (never send) PayPal invoices and dispute responses for a human to approve, using the MCP tools that are disabled today.
 

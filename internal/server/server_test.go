@@ -480,20 +480,26 @@ func TestRejectApprovedUnpaidWithdrawsOrder(t *testing.T) {
 	if pay.Status != "CANCELLED" || pay.Reserved {
 		t.Fatalf("order not withdrawn: %+v", pay)
 	}
-	if _, reserved := e.mandateNumbers(mdID); reserved != 0 {
-		t.Fatalf("reservation not released: %v", reserved)
-	}
-	// the agent proposes again and, under the threshold, a new order appears
+	// The agent proposes again at once and, under the threshold, a new order
+	// appears; the mandate must then hold exactly that order's reservation,
+	// which proves the withdrawn order's reservation was released.
 	out = e.waitMission(msID, store.MissionAwaitingPayment)
 	if len(out["proposals"].([]any)) != 2 {
 		t.Fatalf("expected a second proposal, got %d", len(out["proposals"].([]any)))
 	}
-	// a paid proposal cannot be rejected
 	ids := out["payments"].([]any)
+	if len(ids) != 2 {
+		t.Fatalf("expected two orders, got %d", len(ids))
+	}
 	newOrder := ids[0].(map[string]any)["id"].(string)
 	if newOrder == orderID {
 		newOrder = ids[1].(map[string]any)["id"].(string)
 	}
+	newPay, _ := e.st.GetPayment(newOrder)
+	if _, reserved := e.mandateNumbers(mdID); reserved != newPay.Amount {
+		t.Fatalf("reserved %v, want exactly the new order's %v", reserved, newPay.Amount)
+	}
+	// a paid proposal cannot be rejected
 	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {newOrder}, "action": {"approve"}})
 	r.Body.Close()
 	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, newOrder))
@@ -698,5 +704,41 @@ func TestSavedPayPalFallsBackToCheckoutWhenTokenIsGone(t *testing.T) {
 	e.waitMission(mid2, store.MissionPaid)
 	if v := e.mandateVault(mdID); v == "" || v == vault {
 		t.Fatalf("expected a new saved account, got %q", v)
+	}
+}
+
+func TestInsightsAggregateCapturedSpend(t *testing.T) {
+	e := newEnv(t)
+	_, mid, orderID := e.startAutoApproved()
+	var ins map[string]any
+	e.get("/api/insights", &ins)
+	if ins["totals"].(map[string]any)["captured"].(float64) != 0 || len(ins["items"].([]any)) == 0 {
+		t.Fatalf("pending order must be listed but not counted: %v", ins["totals"])
+	}
+	var pay map[string]any
+	e.get("/api/missions/"+mid, &pay)
+	approveURL := pay["payments"].([]any)[0].(map[string]any)["approve_url"].(string)
+	e.payThroughMockCheckout(approveURL)
+	e.waitMission(mid, store.MissionPaid)
+	e.get("/api/insights", &ins)
+	tot := ins["totals"].(map[string]any)
+	if tot["captured"].(float64) <= 0 || tot["orders"].(float64) != 1 || tot["items"].(float64) < 1 {
+		t.Fatalf("totals = %v", tot)
+	}
+	cats := ins["by_category"].([]any)
+	if len(cats) == 0 || cats[0].(map[string]any)["key"] != "kitchen" {
+		t.Fatalf("by_category = %v", cats)
+	}
+	if len(ins["by_merchant"].([]any)) == 0 || len(ins["by_day"].([]any)) != 1 {
+		t.Fatalf("buckets = %v %v", ins["by_merchant"], ins["by_day"])
+	}
+	items := ins["items"].([]any)
+	first := items[0].(map[string]any)
+	if first["order_id"] != orderID || first["status"] != "COMPLETED" || first["line_total"].(float64) <= 0 || first["category"] != "kitchen" {
+		t.Fatalf("item = %v", first)
+	}
+	md := ins["mandates"].([]any)[0].(map[string]any)
+	if md["orders"].(float64) != 1 || md["spent"].(float64) <= 0 {
+		t.Fatalf("mandate row = %v", md)
 	}
 }

@@ -119,6 +119,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/proposals/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/proposals/{id}/reject", s.handleReject)
 	m.HandleFunc("GET /api/ledger", s.handleLedger)
+	m.HandleFunc("GET /api/insights", s.handleInsights)
 	m.HandleFunc("POST /api/payments/{id}/sync", s.handleSyncPayment)
 	m.HandleFunc("POST /api/ask", s.handleAsk)
 

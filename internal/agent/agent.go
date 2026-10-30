@@ -377,15 +377,24 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 					m.ProposalID = p.ID
 					if p.Status == store.ProposalPending {
 						m.Status = store.MissionAwaitingApproval
-					} else {
-						m.Status = store.MissionAwaitingPayment
 					}
 				})
 				s.Store.AddEvent(missionID, "proposal", fmt.Sprintf("proposal %s created (%s): %d item(s), total %.2f %s", p.ID, p.Status, len(cart.Items), d.Total, d.Currency), map[string]any{"proposal_id": p.ID, "status": p.Status, "total": d.Total})
 				if s.OnProposal != nil {
+					// For auto-approved proposals the hook creates (or completes)
+					// the payment and moves the mission to awaiting_payment or paid
+					// itself, so readers never see the status before the order exists.
 					if err := s.OnProposal(ctx, p); err != nil {
 						s.Store.AddEvent(missionID, "error", "post-proposal hook failed: "+err.Error(), nil)
 					}
+				}
+				if p.Status == store.ProposalAutoApproved {
+					// No order could be created: let a human approve it from the UI.
+					_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
+						if m.Status == store.MissionRunning {
+							m.Status = store.MissionAwaitingApproval
+						}
+					})
 				}
 				status, note := p.Status, "a human must approve before anything is paid"
 				if cur, err := s.Store.GetProposal(p.ID); err == nil {

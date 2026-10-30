@@ -251,6 +251,13 @@ type cartItemInput struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// MaxProposalsPerMission bounds how often a model may propose in one
+// mission; MaxQuantity bounds one cart line.
+const (
+	MaxProposalsPerMission = 10
+	MaxQuantity            = 20
+)
+
 func (s *Shopper) tools(missionID string, searches *int) []Tool {
 	return []Tool{
 		{
@@ -362,9 +369,21 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 				if err := json.Unmarshal(input, &in); err != nil {
 					return "", fmt.Errorf("invalid input: %w", err)
 				}
-				for _, p := range s.Store.ListProposals(missionID) {
-					if p.Status == store.ProposalPending || p.Status == store.ProposalAutoApproved || p.Status == store.ProposalApproved {
+				// Hard guard, not prose: a mission carries one live cart at a
+				// time, never proposes again once a cart was paid, and cannot
+				// propose without end. With a saved PayPal account and an
+				// auto-approve threshold a proposal can pay itself, so this is
+				// what bounds a misbehaving model to one purchase per mission.
+				proposals := s.Store.ListProposals(missionID)
+				if len(proposals) >= MaxProposalsPerMission {
+					return "", fmt.Errorf("this mission already has %d proposals; stop and summarise", len(proposals))
+				}
+				for _, p := range proposals {
+					switch p.Status {
+					case store.ProposalPending, store.ProposalAutoApproved, store.ProposalApproved:
 						return "", fmt.Errorf("proposal %s is already waiting on the human; do not propose again", p.ID)
+					case store.ProposalPaid, store.ProposalRefunded:
+						return "", fmt.Errorf("proposal %s was already paid; this mission is complete, do not propose again", p.ID)
 					}
 				}
 				md, cart, err := s.buildCart(ctx, missionID, in.Items)
@@ -518,6 +537,9 @@ func (s *Shopper) buildCart(ctx context.Context, missionID string, items []cartI
 		q := it.Quantity
 		if q <= 0 {
 			q = 1
+		}
+		if q > MaxQuantity {
+			return nil, mandate.Cart{}, fmt.Errorf("product %q: quantity %d is above the limit of %d per line", it.ProductID, q, MaxQuantity)
 		}
 		cart.Items = append(cart.Items, mandate.CartItem{ProductID: p.ID, Title: p.Title, Merchant: p.Merchant, Category: p.Category, UnitPrice: p.Price, Currency: p.Currency, Quantity: q, Rating: p.Rating, Reason: strings.TrimSpace(it.Reason)})
 	}

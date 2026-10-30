@@ -10,7 +10,7 @@ page.on('pageerror', (e) => console.log('PAGEERROR', e.message))
 page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE', m.text()) })
 
 const md = await (await page.request.post(base + '/api/mandates', { data: { name: 'Vault demo', currency: 'USD', total_budget: 1000, auto_approve_under: 60, save_payment_method: true } })).json()
-if (md.vault_id) throw new Error('vault_id must start empty')
+if (md.has_saved_payment || md.vault_id) throw new Error('a new mandate must have no saved payment (and the API must never return a token id)')
 
 // 1. first purchase: under the threshold, so it goes straight to (simulated) checkout and saves the account
 const m1 = await (await page.request.post(base + '/api/missions', { data: { mandate_id: md.id, goal: 'aeropress coffee maker' } })).json()

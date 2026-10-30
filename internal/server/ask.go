@@ -178,7 +178,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "the order assistant is not available")
 		return
 	}
-	if !s.allowMissionStart() {
+	if !s.allowRunFrom(r) {
 		writeErr(w, 429, "too many agent runs this hour; please try again later")
 		return
 	}

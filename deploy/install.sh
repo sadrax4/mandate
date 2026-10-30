@@ -5,16 +5,30 @@
 #   curl -fsSL https://raw.githubusercontent.com/sadrax4/mandate/main/deploy/install.sh | bash
 #
 # Configuration lives in /opt/mandate/.env (created from .env.example on the
-# first run; edit it and run `systemctl restart mandate`).
+# first run; edit it and run `systemctl restart mandate`). The service runs as
+# the unprivileged user "mandate"; the .env file and the data directory are
+# readable by that user only.
 set -euo pipefail
 REPO="${MANDATE_REPO:-sadrax4/mandate}"
 DIR="${MANDATE_DIR:-/opt/mandate}"
+SVC_USER="${MANDATE_USER:-mandate}"
 URL="https://github.com/${REPO}/releases/latest/download/mandate-linux-amd64.tar.gz"
 
+if ! id "$SVC_USER" >/dev/null 2>&1; then
+  useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin "$SVC_USER"
+fi
 mkdir -p "$DIR/data"
 cd "$DIR"
 echo "Downloading $URL"
 curl -fsSL -o mandate.tar.gz "$URL"
+# The release publishes a checksum next to the archive: refuse a download that does not match it.
+if curl -fsSL -o mandate.tar.gz.sha256 "$URL.sha256" 2>/dev/null; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "$(awk '{print $1}' mandate.tar.gz.sha256)  mandate.tar.gz" | sha256sum -c - >/dev/null
+    echo "Checksum verified"
+  fi
+  rm -f mandate.tar.gz.sha256
+fi
 tar xzf mandate.tar.gz
 rm -f mandate.tar.gz
 chmod +x mandate
@@ -30,8 +44,11 @@ if ! grep -q '^PUBLIC_URL=' .env || grep -q '^PUBLIC_URL=http://localhost' .env;
   IP=$(curl -fsSL https://api.ipify.org || hostname -I | awk '{print $1}')
   sed -i '/^PUBLIC_URL=/d' .env
   echo "PUBLIC_URL=http://${IP}:8080" >> .env
-  echo "Set PUBLIC_URL=http://${IP}:8080"
+  echo "Set PUBLIC_URL=http://${IP}:8080 (put a domain with HTTPS in front of it for PayPal webhooks)"
 fi
+chown -R "$SVC_USER:$SVC_USER" "$DIR"
+chmod 700 "$DIR/data"
+chmod 600 "$DIR/.env"
 
 cat > /etc/systemd/system/mandate.service <<UNIT
 [Unit]
@@ -45,7 +62,14 @@ WorkingDirectory=$DIR
 ExecStart=$DIR/mandate
 Restart=always
 RestartSec=3
-User=root
+User=$SVC_USER
+Group=$SVC_USER
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=$DIR/data
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -65,6 +66,10 @@ type Server struct {
 
 	rateMu     sync.Mutex
 	rateStarts []time.Time
+	ips        ipWindows // per-client limits for the public demo
+	streamsMu  sync.Mutex
+	streams    map[string]int // open SSE streams per client
+	streamsAll int
 
 	// payMu serialises every money-moving transition (approve, capture,
 	// cancel, void, refund) so a double click or a webhook racing a redirect
@@ -104,7 +109,7 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 		cfg.Currency = "USD"
 	}
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
-	s := &Server{cfg: cfg, st: st, pp: pp, shopper: shopper, catalog: cat, mux: http.NewServeMux(), inflight: map[string]inflightOrder{}, stop: make(chan struct{})}
+	s := &Server{cfg: cfg, st: st, pp: pp, shopper: shopper, catalog: cat, mux: http.NewServeMux(), inflight: map[string]inflightOrder{}, stop: make(chan struct{}), streams: map[string]int{}}
 	s.recomputeAllReserved() // reservations are derived from payment rows
 	if m, ok := pp.(*paypal.Mock); ok {
 		s.ppMock = m
@@ -126,7 +131,26 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 func (s *Server) Close() { s.stopOnce.Do(func() { close(s.stop) }) }
 
 // Handler returns the root handler.
-func (s *Server) Handler() http.Handler { return logRequests(s.mux) }
+func (s *Server) Handler() http.Handler { return logRequests(secure(s.mux)) }
+
+// secure adds the response headers every page gets and refuses state
+// changes a foreign site tries to trigger from a visitor's browser
+// (browsers mark those with Sec-Fetch-Site: cross-site; PayPal's webhooks
+// and curl send no such header).
+func secure(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/") && r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			writeErr(w, 403, "cross-site requests are not accepted")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) routes() {
 	m := s.mux
@@ -135,7 +159,14 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/categories", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, catalog.Categories) })
 	m.HandleFunc("GET /api/products/search", s.handleSearch)
 
-	m.HandleFunc("GET /api/mandates", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.st.ListMandates()) })
+	m.HandleFunc("GET /api/mandates", func(w http.ResponseWriter, _ *http.Request) {
+		all := s.st.ListMandates()
+		out := make([]mandate.Mandate, 0, len(all))
+		for _, md := range all {
+			out = append(out, md.Redacted())
+		}
+		writeJSON(w, 200, out)
+	})
 	m.HandleFunc("POST /api/mandates", s.handleCreateMandate)
 	m.HandleFunc("POST /api/mandates/demo", s.handleDemoMandate)
 	m.HandleFunc("GET /api/mandates/{id}", s.handleGetMandate)
@@ -185,6 +216,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if !s.ips.allow("search", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+		writeErr(w, 429, "too many searches from this address; please try again later")
+		return
+	}
 	q := r.URL.Query()
 	maxPrice, _ := strconv.ParseFloat(q.Get("max_price"), 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -219,9 +254,33 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if !s.ips.allow("mandate", clientIP(r), 20, s.cfg.MaxMissionsPerHour > 0) {
+		writeErr(w, 429, "too many mandates created from this address; please try again later")
+		return
+	}
+	if len(s.st.ListMandates()) >= MaxMandates {
+		writeErr(w, 409, fmt.Sprintf("this demo keeps at most %d mandates", MaxMandates))
+		return
+	}
 	s.st.PutMandate(&in)
-	writeJSON(w, 201, in)
+	writeJSON(w, 201, in.Redacted())
 }
+
+// mandateView is the API shape of a mandate (nil stays nil).
+func mandateView(md *mandate.Mandate) *mandate.Mandate {
+	if md == nil {
+		return nil
+	}
+	r := md.Redacted()
+	return &r
+}
+
+// MaxMandates bounds the JSON store of a public demo; MaxFeedbackLen bounds
+// what a rejection feeds back into the next prompt.
+const (
+	MaxMandates    = 500
+	MaxFeedbackLen = 1000
+)
 
 // handleDemoMandate creates the dashboard's demo mandate once; later calls
 // return the existing one (201 when created, 200 when it already existed).
@@ -230,7 +289,7 @@ func (s *Server) handleDemoMandate(w http.ResponseWriter, _ *http.Request) {
 	defer s.demoMu.Unlock()
 	for _, m := range s.st.ListMandates() {
 		if m.Demo {
-			writeJSON(w, 200, map[string]any{"mandate": m, "created": false})
+			writeJSON(w, 200, map[string]any{"mandate": m.Redacted(), "created": false})
 			return
 		}
 	}
@@ -244,7 +303,7 @@ func (s *Server) handleDemoMandate(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	s.st.PutMandate(md)
-	writeJSON(w, 201, map[string]any{"mandate": md, "created": true})
+	writeJSON(w, 201, map[string]any{"mandate": md.Redacted(), "created": true})
 }
 
 // handleForgetPayment revokes the saved PayPal account on a mandate: the
@@ -277,7 +336,7 @@ func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mandate not found")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"mandate": md, "missions": s.st.ListMissions(md.ID)})
+	writeJSON(w, 200, map[string]any{"mandate": md.Redacted(), "missions": s.st.ListMissions(md.ID)})
 }
 
 // --- missions ---
@@ -317,7 +376,7 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mandate not found")
 		return
 	}
-	if !s.allowMissionStart() {
+	if !s.allowRunFrom(r) {
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
 	}
@@ -351,6 +410,13 @@ func (s *Server) startAgent(m *store.Mission, feedback string) {
 func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, error) {
 	if parent.RepeatDays <= 0 {
 		return nil, &httpError{409, "this mission is not a standing order"}
+	}
+	if md, err := s.st.GetMandate(parent.MandateID); err != nil || md.Remaining() <= 0 {
+		// The README promises a standing order stops the moment the budget
+		// runs out: stop it here, before a model turn is spent.
+		_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) { m.RepeatDays = 0; m.NextRunAt = nil })
+		s.st.AddEvent(parent.ID, "status", "standing order stopped: the mandate's budget is used up", map[string]any{"repeat_days": 0})
+		return nil, &httpError{409, "the mandate's budget is used up; the standing order has been stopped"}
 	}
 	if !s.allowMissionStart() {
 		return nil, &httpError{429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)}
@@ -405,6 +471,10 @@ func (s *Server) handleRunNow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mission not found")
 		return
 	}
+	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.MaxMissionsPerHour > 0) {
+		writeErr(w, 429, "too many agent runs from this address; please try again later")
+		return
+	}
 	run, err := s.startRun(m, "run now")
 	if err != nil {
 		var he *httpError
@@ -431,6 +501,23 @@ func (s *Server) handleStopRepeat(w http.ResponseWriter, r *http.Request) {
 	m, _ = s.st.UpdateMission(m.ID, func(x *store.Mission) { x.RepeatDays, x.NextRunAt = 0, nil })
 	s.st.AddEvent(m.ID, "status", "standing order stopped by the human; no further runs", nil)
 	writeJSON(w, 200, m)
+}
+
+// allowRunFrom is allowMissionStart plus a per-client share of the cap, so
+// one address cannot use up every judge's hour.
+func (s *Server) allowRunFrom(r *http.Request) bool {
+	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.MaxMissionsPerHour > 0) {
+		return false
+	}
+	return s.allowMissionStart()
+}
+
+// runsPerClient is one address's share of the hourly run cap.
+func runsPerClient(capPerHour int) int {
+	if n := capPerHour / 2; n > 5 {
+		return n
+	}
+	return 5
 }
 
 // allowMissionStart enforces the per-hour cap on agent runs (missions and
@@ -485,7 +572,7 @@ func (s *Server) handleApplySuggestion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "cannot apply: "+err.Error())
 		return
 	}
-	if !s.allowMissionStart() {
+	if !s.allowRunFrom(r) {
 		s.payMu.Unlock()
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
@@ -520,7 +607,7 @@ func (s *Server) handleGetMission(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"mission":   m,
-		"mandate":   md,
+		"mandate":   mandateView(md),
 		"proposals": s.st.ListProposals(m.ID),
 		"payments":  payments,
 		"events":    s.st.ListEvents(m.ID, 0),
@@ -538,6 +625,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "streaming unsupported")
 		return
 	}
+	if !s.openStream(clientIP(r)) {
+		writeErr(w, 503, "too many open event streams; close some tabs and retry")
+		return
+	}
+	defer s.closeStream(clientIP(r))
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -575,6 +667,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // --- proposals & payments ---
 
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	if !s.ips.allow("paypal", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+		writeErr(w, 429, "too many PayPal requests from this address; please try again later")
+		return
+	}
 	pay, err := s.createPayment(r.Context(), r.PathValue("id"))
 	if err != nil {
 		var he *httpError
@@ -817,7 +913,7 @@ func (s *Server) forgetSavedPayment(mandateID, missionID, reason string) {
 		return
 	}
 	_ = s.st.UpdateMandate(mandateID, func(m *mandate.Mandate) error { m.VaultID, m.VaultPayer, m.VaultedAt = "", "", nil; return nil })
-	s.st.AddEvent(missionID, "vault", reason+"; the saved account was removed from the mandate and the next checkout will save a new one", map[string]any{"vault_id": md.VaultID})
+	s.st.AddEvent(missionID, "vault", reason+"; the saved account was removed from the mandate and the next checkout will save a new one", map[string]any{"payer": md.VaultPayer})
 }
 
 // releaseReservation gives a payment's budget reservation back to the mandate.
@@ -946,7 +1042,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	_ = readJSON(r, &in)
-	in.Reason = strings.TrimSpace(in.Reason)
+	in.Reason = truncate(strings.TrimSpace(in.Reason), MaxFeedbackLen)
 	if in.Reason == "" {
 		in.Reason = "rejected without a reason"
 	}
@@ -992,7 +1088,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 	// The rate limit is checked before anything changes, so a refusal leaves
 	// the proposal exactly as it was.
-	if !s.allowMissionStart() {
+	if !s.allowRunFrom(r) {
 		s.payMu.Unlock()
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
@@ -1028,6 +1124,10 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 // order is captured here; if PayPal already shows it completed, our ledger is
 // reconciled. This is what a merchant would normally do from a webhook.
 func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
+	if !s.ips.allow("paypal", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+		writeErr(w, 429, "too many PayPal requests from this address; please try again later")
+		return
+	}
 	pay, err := s.st.GetPayment(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, 404, "payment not found")
@@ -1241,7 +1341,7 @@ func (s *Server) adoptVaultLocked(pay *store.Payment, vaultID, vaultStatus, paye
 	if md.AutoApproveUnder > 0 && !md.RequireApproval {
 		msg += fmt.Sprintf(", and carts under %.2f %s pay with no click at all", md.AutoApproveUnder, md.Currency)
 	}
-	s.st.AddEvent(pay.MissionID, "vault", msg, map[string]any{"vault_id": vaultID, "payer": payer})
+	s.st.AddEvent(pay.MissionID, "vault", msg, map[string]any{"payer": payer})
 }
 
 // markRefunded applies a refund, reversal or denial. A partial refund gives
@@ -1563,16 +1663,106 @@ func (s *Server) staticHandler() http.Handler {
 			fs.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, index)
 	})
+}
+
+// --- per-client limits (public demo) ---
+
+// ipWindows counts events per client and kind over the last hour.
+type ipWindows struct {
+	mu   sync.Mutex
+	hits map[string][]time.Time
+}
+
+// allow records one event for key kind:ip and reports whether it stays
+// under limit per hour. Disabled (always true) unless the demo cap is on.
+func (w *ipWindows) allow(kind, ip string, limit int, enabled bool) bool {
+	if !enabled || ip == "" {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.hits == nil {
+		w.hits = map[string][]time.Time{}
+	}
+	if len(w.hits) > 10000 { // an address flood must not grow memory without end
+		w.hits = map[string][]time.Time{}
+	}
+	key := kind + ":" + ip
+	cutoff := time.Now().Add(-time.Hour)
+	kept := w.hits[key][:0]
+	for _, t := range w.hits[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= limit {
+		w.hits[key] = kept
+		return false
+	}
+	w.hits[key] = append(kept, time.Now())
+	return true
+}
+
+// clientIP is the address a request came from. Behind the compose profile's
+// reverse proxy the socket peer is a private address and the proxy sets
+// X-Forwarded-For; a public peer is trusted as is.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
+	}
+	return host
+}
+
+const (
+	maxStreams      = 500
+	maxStreamsPerIP = 20
+)
+
+func (s *Server) openStream(ip string) bool {
+	s.streamsMu.Lock()
+	defer s.streamsMu.Unlock()
+	if s.streamsAll >= maxStreams || s.streams[ip] >= maxStreamsPerIP {
+		return false
+	}
+	s.streamsAll++
+	s.streams[ip]++
+	return true
+}
+
+func (s *Server) closeStream(ip string) {
+	s.streamsMu.Lock()
+	defer s.streamsMu.Unlock()
+	s.streamsAll--
+	if s.streams[ip] <= 1 {
+		delete(s.streams, ip)
+	} else {
+		s.streams[ip]--
+	}
 }
 
 // --- helpers ---
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("writeJSON: %v", err)
+		http.Error(w, `{"error":"could not encode the response"}`, 500)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(data, '\n'))
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {

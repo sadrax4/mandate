@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Mandate is a spending authority granted to the agent.
@@ -43,6 +44,8 @@ type Mandate struct {
 	VaultID    string     `json:"vault_id,omitempty"`
 	VaultPayer string     `json:"vault_payer,omitempty"`
 	VaultedAt  *time.Time `json:"vaulted_at,omitempty"`
+	// HasSaved is what the API reports instead of the token id (see Redacted).
+	HasSaved bool `json:"has_saved_payment"`
 	// Demo marks the one mandate the dashboard's "Create demo mandate"
 	// button creates; a second click returns it instead of making another.
 	Demo bool `json:"demo,omitempty"`
@@ -251,7 +254,7 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 		if len(allowed) > 0 && !allowed[strings.ToLower(it.Category)] {
 			d.Violations = append(d.Violations, Violation{Code: "category_not_allowed", Message: fmt.Sprintf("%q is in category %q which this mandate does not allow (allowed: %s)", it.Title, it.Category, strings.Join(m.AllowedCategories, ", ")), ProductID: it.ProductID})
 		}
-		if blocked[strings.ToLower(it.Merchant)] {
+		if MerchantBlocked(it.Merchant, m.BlockedMerchants) {
 			d.Violations = append(d.Violations, Violation{Code: "merchant_blocked", Message: fmt.Sprintf("merchant %q is blocked by this mandate", it.Merchant), ProductID: it.ProductID})
 		}
 		if m.MinRating > 0 && it.Rating > 0 && it.Rating < m.MinRating {
@@ -284,12 +287,34 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 }
 
 // Validate checks the mandate itself is coherent.
+// Bounds on what a mandate may hold. Money is capped well below where
+// float64 arithmetic (and JSON encoding of the results) stops being exact.
+const (
+	MaxMoney       = 1e9
+	MaxNameLen     = 100
+	MaxListEntries = 20
+	MaxEntryLen    = 64
+)
+
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
 func (m Mandate) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
+	if utf8.RuneCountInString(m.Name) > MaxNameLen {
+		return fmt.Errorf("name must be at most %d characters", MaxNameLen)
+	}
+	for _, v := range []float64{m.TotalBudget, m.MaxPerItem, m.AutoApproveUnder, m.MinRating, m.Spent, m.Reserved} {
+		if !finite(v) {
+			return fmt.Errorf("amounts must be finite numbers")
+		}
+	}
 	if m.TotalBudget <= 0 {
 		return fmt.Errorf("total_budget must be positive")
+	}
+	if m.TotalBudget > MaxMoney || m.MaxPerItem > MaxMoney || m.AutoApproveUnder > MaxMoney {
+		return fmt.Errorf("amounts cannot exceed %.0f", MaxMoney)
 	}
 	if m.MaxPerItem < 0 || m.AutoApproveUnder < 0 || m.MinRating < 0 {
 		return fmt.Errorf("limits cannot be negative")
@@ -300,8 +325,62 @@ func (m Mandate) Validate() error {
 	if len(m.Currency) != 3 {
 		return fmt.Errorf("currency must be a 3-letter ISO code")
 	}
+	for name, list := range map[string][]string{"allowed_categories": m.AllowedCategories, "blocked_merchants": m.BlockedMerchants} {
+		if len(list) > MaxListEntries {
+			return fmt.Errorf("%s can hold at most %d entries", name, MaxListEntries)
+		}
+		for _, e := range list {
+			if utf8.RuneCountInString(e) > MaxEntryLen {
+				return fmt.Errorf("%s entries must be at most %d characters", name, MaxEntryLen)
+			}
+		}
+	}
 	return nil
 }
 
-// Round rounds money to cents.
-func Round(v float64) float64 { return math.Round(v*100) / 100 }
+// Redacted returns the mandate as the API shows it: the saved PayPal token
+// id stays on the server, callers only learn that one exists.
+func (m Mandate) Redacted() Mandate {
+	out := m
+	out.AllowedCategories = append([]string(nil), m.AllowedCategories...)
+	out.BlockedMerchants = append([]string(nil), m.BlockedMerchants...)
+	out.HasSaved = m.VaultID != ""
+	out.VaultID = ""
+	return out
+}
+
+// Round rounds money to cents; a non-finite value is returned unchanged so
+// it can be rejected rather than turned into a surprise.
+func Round(v float64) float64 {
+	if !finite(v) {
+		return v
+	}
+	return math.Round(v*100) / 100
+}
+
+// merchantDomain normalises a merchant name or domain for the block list:
+// lower case, no scheme, no leading "www.".
+func merchantDomain(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "https://"), "http://")
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimPrefix(s, "www.")
+}
+
+// MerchantBlocked reports whether a merchant matches an entry of the block
+// list: the same domain, or a subdomain of it (shop.temu.com for temu.com).
+func MerchantBlocked(merchant string, blocked []string) bool {
+	m := merchantDomain(merchant)
+	if m == "" {
+		return false
+	}
+	for _, b := range blocked {
+		b = merchantDomain(b)
+		if b != "" && (m == b || strings.HasSuffix(m, "."+b)) {
+			return true
+		}
+	}
+	return false
+}

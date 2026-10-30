@@ -13,7 +13,8 @@ export type Mandate = {
   reserved: number
   created_at: string
   save_payment_method?: boolean
-  vault_id?: string
+  /** The saved PayPal token itself never leaves the server; the API only says whether one exists. */
+  has_saved_payment?: boolean
   vault_payer?: string
   vaulted_at?: string
   demo?: boolean

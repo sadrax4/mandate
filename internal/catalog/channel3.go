@@ -272,7 +272,10 @@ func (c *Channel3) normalise(cp c3Product, wantCurrency string) (Product, bool) 
 		p.Attributes["raw_category"] = rawCat
 		p.Attributes["category_slug"] = cp.Category.Slug
 	}
-	p.Category = NormaliseCategory(rawCat + " " + cp.Title)
+	// The category comes from Channel3's category path only. Titles are
+	// retailer-written text: "kettle with USB port" must not become
+	// "computers" and slip past a category rule.
+	p.Category = NormaliseCategory(rawCat)
 	for k, vs := range cp.StructuredAttribute {
 		if len(vs) > 0 {
 			p.Attributes[k] = strings.Join(vs, ", ")

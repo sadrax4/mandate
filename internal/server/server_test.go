@@ -712,11 +712,14 @@ func (e *env) payThroughMockCheckout(approveURL string) string {
 	return r2.Header.Get("Location")
 }
 
+// mandateVault reads the saved token id from the store: the API never
+// returns it (see TestVaultTokenIsNeverExposed).
 func (e *env) mandateVault(id string) string {
-	var mdv map[string]any
-	e.get("/api/mandates/"+id, &mdv)
-	v, _ := mdv["mandate"].(map[string]any)["vault_id"].(string)
-	return v
+	md, err := e.st.GetMandate(id)
+	if err != nil {
+		return ""
+	}
+	return md.VaultID
 }
 
 func (e *env) pendingProposal(mandateID string) (missionID, proposalID string) {
@@ -1890,5 +1893,180 @@ func TestConfiguredCurrencyIsNormalised(t *testing.T) {
 		if srv.cfg.Currency != want {
 			t.Fatalf("CURRENCY=%q -> %q, want %q", in, srv.cfg.Currency, want)
 		}
+	}
+}
+
+func TestVaultTokenIsNeverExposed(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	if e.mandateVault(mdID) == "" {
+		t.Fatal("no token saved")
+	}
+	var one, detail map[string]any
+	var all []map[string]any
+	e.get("/api/mandates/"+mdID, &one)
+	e.get("/api/mandates", &all)
+	e.get("/api/missions/"+mid, &detail)
+	for name, m := range map[string]map[string]any{"get": one["mandate"].(map[string]any), "list": all[0], "mission": detail["mandate"].(map[string]any)} {
+		if v, ok := m["vault_id"]; ok && v != "" {
+			t.Fatalf("%s exposes the vault token: %v", name, v)
+		}
+		if m["has_saved_payment"] != true {
+			t.Fatalf("%s must say a saved account exists: %v", name, m)
+		}
+	}
+	if strings.Contains(e.missionEvents(mid), e.mandateVault(mdID)) {
+		t.Fatal("an event message carries the token")
+	}
+	for _, ev := range detail["events"].([]any) {
+		if d, ok := ev.(map[string]any)["data"].(map[string]any); ok {
+			if _, has := d["vault_id"]; has {
+				t.Fatal("event data carries the token")
+			}
+		}
+	}
+}
+
+func TestMandateInputIsBounded(t *testing.T) {
+	e := newEnv(t)
+	var out map[string]any
+	for name, body := range map[string]map[string]any{
+		"huge budget":    {"name": "x", "total_budget": 1e307},
+		"huge cap":       {"name": "x", "total_budget": 100, "max_per_item": 1e300},
+		"long name":      {"name": strings.Repeat("n", 101), "total_budget": 100},
+		"many merchants": {"name": "x", "total_budget": 100, "blocked_merchants": strings.Split(strings.Repeat("a.com,", 21), ",")},
+		"long category":  {"name": "x", "total_budget": 100, "allowed_categories": []string{strings.Repeat("c", 65)}},
+	} {
+		if code := e.post("/api/mandates", body, &out); code != 400 {
+			t.Fatalf("%s: expected 400, got %d %v", name, code, out)
+		}
+	}
+	if code := e.post("/api/mandates", map[string]any{"name": "ok", "total_budget": 1e9, "blocked_merchants": []string{"www.Temu.com/"}}, &out); code != 201 {
+		t.Fatalf("largest allowed budget refused: %d %v", code, out)
+	}
+	// every page still renders JSON afterwards
+	var ins map[string]any
+	if code := e.get("/api/insights", &ins); code != 200 || ins["totals"] == nil {
+		t.Fatalf("insights broken: %d %v", code, ins)
+	}
+}
+
+func TestRejectionFeedbackIsTruncated(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	_, pid := e.pendingProposal(md["id"].(string))
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": strings.Repeat("x", 5000)}, &rj); code != 200 {
+		t.Fatalf("reject: %d %v", code, rj)
+	}
+	pr, _ := e.st.GetProposal(pid)
+	if len(pr.Feedback) > MaxFeedbackLen+3 {
+		t.Fatalf("feedback stored at %d chars", len(pr.Feedback))
+	}
+}
+
+func TestPerClientLimitsOnThePublicDemo(t *testing.T) {
+	st, _ := store.Open("")
+	t.Cleanup(st.Close)
+	cat := catalog.NewMock()
+	ts := httptest.NewServer(nil)
+	srv := New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", MaxMissionsPerHour: 40}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
+	ts.Config.Handler = srv.Handler()
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	e := &env{t: t, ts: ts, st: st, cli: &http.Client{}}
+	var out map[string]any
+	for i := 0; i < 60; i++ {
+		if code := e.get("/api/products/search?q=keyboard", &out); code != 200 {
+			t.Fatalf("search %d: %d", i, code)
+		}
+	}
+	if code := e.get("/api/products/search?q=keyboard", &out); code != 429 {
+		t.Fatalf("61st search from one address must be refused, got %d", code)
+	}
+	for i := 0; i < 20; i++ {
+		if code := e.post("/api/mandates", map[string]any{"name": "m", "total_budget": 100}, &out); code != 201 {
+			t.Fatalf("mandate %d: %d %v", i, code, out)
+		}
+	}
+	if code := e.post("/api/mandates", map[string]any{"name": "m", "total_budget": 100}, &out); code != 429 {
+		t.Fatalf("21st mandate from one address must be refused, got %d", code)
+	}
+	// a forwarded address behind the compose proxy counts separately
+	req, _ := http.NewRequest("GET", ts.URL+"/api/products/search?q=keyboard", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("another client must not be limited by the first: %d", resp.StatusCode)
+	}
+}
+
+func TestSecurityHeadersAndCrossSitePosts(t *testing.T) {
+	e := newEnv(t)
+	resp, err := e.cli.Get(e.ts.URL + "/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for h, want := range map[string]string{"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "strict-origin-when-cross-origin"} {
+		if got := resp.Header.Get(h); got != want {
+			t.Fatalf("%s = %q", h, got)
+		}
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("csp = %q", csp)
+	}
+	req, _ := http.NewRequest("POST", e.ts.URL+"/api/mandates/demo", nil)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err = e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("a cross-site POST must be refused, got %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest("POST", e.ts.URL+"/api/mandates/demo", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err = e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 201 {
+		t.Fatalf("same-origin POST: %d", resp.StatusCode)
+	}
+}
+
+func TestStandingOrderStopsWhenTheBudgetIsUsedUp(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Snacks", "total_budget": 39.95, "auto_approve_under": 50}, &md)
+	mdID := md["id"].(string)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker", "repeat_days": 30}, &ms)
+	msID := ms["id"].(string)
+	out := e.waitMission(msID, store.MissionAwaitingPayment)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(msID, store.MissionPaid) // the whole budget is spent
+	var run map[string]any
+	if code := e.post("/api/missions/"+msID+"/run-now", nil, &run); code != 409 {
+		t.Fatalf("run-now with no budget left: %d %v", code, run)
+	}
+	m, _ := e.st.GetMission(msID)
+	if m.RepeatDays != 0 || m.NextRunAt != nil {
+		t.Fatalf("standing order must stop: %+v", m)
 	}
 }

@@ -96,3 +96,25 @@ func TestChannel3SearchDecodesOpenAPIShape(t *testing.T) {
 		t.Fatal("expected auth error")
 	}
 }
+
+func TestChannel3CategoryComesFromThePathNotTheTitle(t *testing.T) {
+	c := &Channel3{}
+	kettle := c3Product{ID: "k1", Title: "Electric gooseneck kettle with USB charging port and keyboard-style buttons"}
+	kettle.Category = &struct {
+		Slug  string   `json:"slug"`
+		Title string   `json:"title"`
+		Path  []c3Name `json:"path"`
+	}{Slug: "kettles", Title: "Kettles", Path: []c3Name{{Title: "Home"}, {Title: "Kitchen"}, {Title: "Kettles"}}}
+	kettle.Offers = []c3Offer{{URL: "https://shop.example/k1", Domain: "shop.example"}}
+	kettle.Offers[0].Price.Price = 59
+	kettle.Offers[0].Price.Currency = "USD"
+	p, ok := c.normalise(kettle, "USD")
+	if !ok || p.Category != "kitchen" {
+		t.Fatalf("a kettle must stay in the kitchen whatever its title says: ok=%v category=%q", ok, p.Category)
+	}
+	bare := kettle
+	bare.Category = nil
+	if p, ok := c.normalise(bare, "USD"); !ok || p.Category != "other" {
+		t.Fatalf("no category path means other, never a guess from the title: %q", p.Category)
+	}
+}

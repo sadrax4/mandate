@@ -31,12 +31,16 @@ function describeSuggestion(s: { field: string; value: any }, currency: string) 
       return `set the ${FIELD_LABEL[s.field] ?? s.field} to ${typeof v === 'number' ? money(v, currency) : v}`
   }
 }
+/** Only web links are followed: a retailer feed must never hand the page a javascript: URL. */
+const safeHref = (u?: string) => (u && /^https?:\/\//i.test(u) ? u : undefined)
+
 /** Product name, linking to the merchant's page when the catalog provided one (Channel3 offers do). */
 function ProductCell(p: { value?: string; data?: { url?: string; source?: string } }) {
   if (!p.value) return null
-  if (!p.data?.url) return <span>{p.value}</span>
+  const href = safeHref(p.data?.url)
+  if (!href) return <span>{p.value}</span>
   return (
-    <a href={p.data.url} target="_blank" rel="noreferrer noopener" className="product-link" title="Open the merchant's product page" onClick={(e) => e.stopPropagation()}>
+    <a href={href} target="_blank" rel="noreferrer noopener" className="product-link" title="Open the merchant's product page" onClick={(e) => e.stopPropagation()}>
       {p.value} <span className="ext">↗</span>
     </a>
   )
@@ -371,8 +375,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                   {!unpaidOrder && (
                     <button className="btn paypal lg" onClick={approve} disabled={busy !== ''}>
                       {busy === 'approve'
-                        ? mandate?.vault_id ? 'Paying with saved PayPal…' : 'Creating PayPal order…'
-                        : mandate?.vault_id ? 'Approve & pay with saved PayPal' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
+                        ? mandate?.has_saved_payment ? 'Paying with saved PayPal…' : 'Creating PayPal order…'
+                        : mandate?.has_saved_payment ? 'Approve & pay with saved PayPal' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
                     </button>
                   )}
                   {!rejecting && (

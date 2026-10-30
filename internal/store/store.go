@@ -382,12 +382,12 @@ func (st *Store) writeFile(data []byte, gen uint64) {
 	if gen <= st.written {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(st.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(st.path), 0o700); err != nil {
 		log.Printf("store: mkdir: %v", err)
 		return
 	}
 	tmp := st.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		log.Printf("store: write %s: %v", tmp, err)
 		return
 	}

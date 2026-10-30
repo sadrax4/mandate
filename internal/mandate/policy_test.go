@@ -1,8 +1,10 @@
 package mandate
 
 import (
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func base() Mandate {
@@ -88,5 +90,47 @@ func TestValidate(t *testing.T) {
 	m.Currency = "dollars"
 	if err := m.Validate(); err == nil {
 		t.Fatal("expected error for bad currency")
+	}
+}
+
+func TestValidateBoundsAndRound(t *testing.T) {
+	base := Mandate{Name: "x", Currency: "USD", TotalBudget: 100}
+	for name, m := range map[string]Mandate{
+		"inf budget":   {Name: "x", Currency: "USD", TotalBudget: math.Inf(1)},
+		"nan cap":      {Name: "x", Currency: "USD", TotalBudget: 100, MaxPerItem: math.NaN()},
+		"huge":         {Name: "x", Currency: "USD", TotalBudget: 1e307},
+		"long name":    {Name: strings.Repeat("n", 101), Currency: "USD", TotalBudget: 100},
+		"long entries": {Name: "x", Currency: "USD", TotalBudget: 100, AllowedCategories: []string{strings.Repeat("c", 65)}},
+	} {
+		if err := m.Validate(); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if v := Round(math.Inf(1)); !math.IsInf(v, 1) {
+		t.Fatalf("Round(+Inf) = %v", v)
+	}
+	if Round(1.005) != 1.01 && Round(1.005) != 1 {
+		t.Fatalf("Round(1.005) = %v", Round(1.005))
+	}
+}
+
+func TestMerchantBlockedMatchesDomains(t *testing.T) {
+	blocked := []string{"temu.com", "https://www.Shein.com/"}
+	for merchant, want := range map[string]bool{"temu.com": true, "www.temu.com": true, "shop.temu.com": true, "temu.co.uk": false, "nottemu.com": false, "shein.com": true, "SHEIN.COM": true, "amazon.com": false, "": false} {
+		if got := MerchantBlocked(merchant, blocked); got != want {
+			t.Fatalf("MerchantBlocked(%q) = %v, want %v", merchant, got, want)
+		}
+	}
+}
+
+func TestRedactedHidesTheToken(t *testing.T) {
+	now := time.Now()
+	m := Mandate{Name: "x", Currency: "USD", TotalBudget: 100, VaultID: "VLT1", VaultPayer: "buyer@example.com", VaultedAt: &now}
+	r := m.Redacted()
+	if r.VaultID != "" || !r.HasSaved || r.VaultPayer != "buyer@example.com" || m.VaultID != "VLT1" {
+		t.Fatalf("redacted = %+v", r)
 	}
 }

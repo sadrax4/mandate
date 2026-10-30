@@ -274,7 +274,7 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
         {m.allowed_categories && m.allowed_categories.length > 0 && <Chip>only {m.allowed_categories.join(', ')}</Chip>}
         {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
         {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
-        {m.vault_id ? (
+        {m.has_saved_payment ? (
           <>
             <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
             <ForgetButton mandate={m} onChanged={onStarted} />

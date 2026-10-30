@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,5 +206,33 @@ func TestNegotiationConvergesInsideTheMandate(t *testing.T) {
 	m2, _ := st2.GetMission(id2)
 	if m2.Status != store.MissionNoProposal || m2.Suggestion == nil || m2.Suggestion.Field != "allowed_categories" {
 		t.Fatalf("status=%s suggestion=%+v", m2.Status, m2.Suggestion)
+	}
+}
+
+func TestPaidMissionRefusesAnotherCart(t *testing.T) {
+	sh, st, missionID := setup(t, mandate.Mandate{Name: "Desk", Currency: "USD", TotalBudget: 300, AutoApproveUnder: 50}, "aeropress coffee maker")
+	m, _ := st.GetMission(missionID)
+	st.PutProposal(&store.Proposal{ID: "prop_paid", MissionID: missionID, MandateID: m.MandateID, Status: store.ProposalPaid, CreatedAt: time.Now()})
+	var n int
+	var propose Tool
+	for _, tl := range sh.tools(missionID, &n) {
+		if tl.Name == "propose_cart" {
+			propose = tl
+		}
+	}
+	if propose.Run == nil {
+		t.Fatal("no propose_cart tool")
+	}
+	_, err := propose.Run(context.Background(), json.RawMessage(`{"items":[{"product_id":"p1","quantity":1}],"summary":"again"}`))
+	if err == nil || !strings.Contains(err.Error(), "already paid") {
+		t.Fatalf("a paid mission must refuse a second cart, got %v", err)
+	}
+	// and never more than the cap, whatever their status
+	for i := 0; i < MaxProposalsPerMission; i++ {
+		st.PutProposal(&store.Proposal{ID: fmt.Sprintf("prop_%d", i), MissionID: missionID, MandateID: m.MandateID, Status: store.ProposalRejected, CreatedAt: time.Now()})
+	}
+	_, err = propose.Run(context.Background(), json.RawMessage(`{"items":[{"product_id":"p1","quantity":1}],"summary":"again"}`))
+	if err == nil || !strings.Contains(err.Error(), "already has") {
+		t.Fatalf("proposal cap: %v", err)
 	}
 }

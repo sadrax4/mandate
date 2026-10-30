@@ -194,9 +194,27 @@ type Payment struct {
 	Accounted bool `json:"accounted"`
 	// RefundIDs lists the PayPal refund (or reversal) resources already
 	// credited, so a redelivered webhook never credits twice.
-	RefundIDs []string  `json:"refund_ids,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RefundIDs []string `json:"refund_ids,omitempty"`
+	// PendingRefunds are refunds PayPal reported before the capture itself
+	// was booked (deliveries are unordered); they are applied at booking.
+	PendingRefunds []PendingRefund `json:"pending_refunds,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+}
+
+// PendingRefund is a refund waiting for its capture to be booked.
+type PendingRefund struct {
+	ID     string  `json:"id"`
+	Status string  `json:"status"`
+	Amount float64 `json:"amount"`
+}
+
+// clone returns a deep copy of the payment (its slices are never shared).
+func (p *Payment) clone() Payment {
+	c := *p
+	c.RefundIDs = append([]string(nil), p.RefundIDs...)
+	c.PendingRefunds = append([]PendingRefund(nil), p.PendingRefunds...)
+	return c
 }
 
 // Event is one line in a mission's activity log.
@@ -556,7 +574,7 @@ func (st *Store) PutPayment(p *Payment) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	p.UpdatedAt = time.Now()
-	c := *p
+	c := p.clone()
 	st.s.Payments[p.ID] = &c
 	st.persistNow()
 }
@@ -568,7 +586,7 @@ func (st *Store) GetPayment(id string) (*Payment, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	c := *p
+	c := p.clone()
 	return &c, nil
 }
 
@@ -582,7 +600,7 @@ func (st *Store) UpdatePayment(id string, fn func(p *Payment)) (*Payment, error)
 	fn(p)
 	p.UpdatedAt = time.Now()
 	st.persistNow()
-	c := *p
+	c := p.clone()
 	return &c, nil
 }
 
@@ -591,7 +609,7 @@ func (st *Store) ListPayments() []*Payment {
 	defer st.mu.RUnlock()
 	out := make([]*Payment, 0, len(st.s.Payments))
 	for _, p := range st.s.Payments {
-		c := *p
+		c := p.clone()
 		out = append(out, &c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })

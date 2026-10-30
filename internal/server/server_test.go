@@ -40,6 +40,7 @@ func newEnv(t *testing.T) *env {
 	srv = New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", Currency: "USD"}, st, pp, shopper, cat)
 	ts.Config.Handler = srv.Handler()
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	cli := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return &env{t: t, ts: ts, st: st, cli: cli, pp: pp, srv: srv}
 }
@@ -1177,10 +1178,197 @@ func TestRestartRecomputesReservations(t *testing.T) {
 	cat := catalog.NewMock()
 	shopper := agent.NewShopper(agent.Fake{}, cat, e.st)
 	srv2 := New(Config{PublicURL: e.ts.URL, StaticDir: "/nonexistent", Currency: "USD"}, e.st, e.pp, shopper, cat)
-	_ = srv2
+	t.Cleanup(srv2.Close)
 	pay, _ := e.st.GetPayment(orderID)
 	_, reserved := e.mandateNumbers(mdID)
 	if reserved != pay.Amount {
 		t.Fatalf("reserved after restart = %v, want %v", reserved, pay.Amount)
+	}
+}
+
+func TestInFlightApprovalKeepsItsReservationWhenAnotherOrderSettles(t *testing.T) {
+	// Budget 100. Order X (39.95) awaits checkout; P2 (39.95) is being
+	// created at PayPal while X is captured. The release for X must not
+	// drop P2's in-flight reservation, and a third approval must see it.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Tight", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	m1, p1 := e.pendingProposal(mdID)
+	var ap1 map[string]any
+	e.post("/api/proposals/"+p1+"/approve", nil, &ap1)
+	x := ap1["payment"].(map[string]any)["id"].(string)
+	_, p2 := e.pendingProposal(mdID)
+	var midCreate float64
+	e.pp.OnCreate = func(req paypal.CreateOrderRequest) {
+		if req.CustomID != p2 {
+			return
+		}
+		e.pp.OnCreate = nil
+		// X is captured while P2's order is being created
+		e.payThroughMockCheckout(ap1["approve_url"].(string))
+		e.waitMission(m1, store.MissionPaid)
+		_, midCreate = e.mandateNumbers(mdID)
+	}
+	var ap2 map[string]any
+	if code := e.post("/api/proposals/"+p2+"/approve", nil, &ap2); code != 200 {
+		t.Fatalf("approve P2: %d %v", code, ap2)
+	}
+	if midCreate != 39.95 {
+		t.Fatalf("in-flight reservation dropped during the capture of %s: reserved=%v", x, midCreate)
+	}
+	spent, reserved := e.mandateNumbers(mdID)
+	if spent != 39.95 || reserved != 39.95 {
+		t.Fatalf("after both: spent=%v reserved=%v", spent, reserved)
+	}
+	// a third proposal (39.95) no longer fits: 100 - 39.95 - 39.95 = 20.10
+	_, p3 := e.pendingProposalAllowingBlock(mdID)
+	if p3 != "" {
+		var ap3 map[string]any
+		if code := e.post("/api/proposals/"+p3+"/approve", nil, &ap3); code != 409 {
+			t.Fatalf("third approval should be refused by the budget, got %d %v", code, ap3)
+		}
+	}
+}
+
+// pendingProposalAllowingBlock starts a mission and returns its first proposal
+// id, or "" when the agent could not propose inside the remaining budget.
+func (e *env) pendingProposalAllowingBlock(mandateID string) (string, string) {
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mandateID, "goal": "aeropress coffee maker"}, &ms)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var out map[string]any
+		e.get("/api/missions/"+ms["id"].(string), &out)
+		st := out["mission"].(map[string]any)["status"]
+		if st == store.MissionAwaitingApproval {
+			return ms["id"].(string), out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+		}
+		if st == store.MissionNoProposal || st == store.MissionFailed {
+			return ms["id"].(string), ""
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return ms["id"].(string), ""
+}
+
+func TestProposalChangedWhileOrderWasBeingCreated(t *testing.T) {
+	e := newEnv(t)
+	e.pp.VaultCompletesOnCreate = true
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	spent1, _ := e.mandateNumbers(mdID)
+
+	// second proposal: PayPal completes the vault order at creation, but the
+	// proposal is cancelled by some other path while the call is in flight
+	mid2, pid2 := e.pendingProposal(mdID)
+	e.pp.OnCreate = func(req paypal.CreateOrderRequest) {
+		e.pp.OnCreate = nil
+		_, _ = e.st.UpdateProposal(pid2, func(p *store.Proposal) { p.Status = store.ProposalCancelled })
+	}
+	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 409 {
+		t.Fatalf("expected 409, got %d %v", code, ap)
+	}
+	var detail map[string]any
+	e.get("/api/missions/"+mid2, &detail)
+	pays := detail["payments"].([]any)
+	if len(pays) != 1 {
+		t.Fatalf("payments = %v", pays)
+	}
+	pay := pays[0].(map[string]any)
+	if pay["accounted"] != true || pay["status"] != store.PaymentCompleted {
+		t.Fatalf("captured money must be booked: %v", pay)
+	}
+	spent2, reserved := e.mandateNumbers(mdID)
+	if mandate.Round(spent2-spent1) <= 0 || reserved != 0 {
+		t.Fatalf("accounting: spent %v -> %v reserved %v", spent1, spent2, reserved)
+	}
+	if detail["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalCancelled {
+		t.Fatalf("proposal must stay cancelled: %v", detail["proposals"])
+	}
+}
+
+func TestRefundBeforeCaptureIsParkedThenApplied(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	body := `{"id":"WH-early","event_type":"PAYMENT.CAPTURE.REFUNDED","resource_type":"refund","resource":{"id":"R-early","status":"COMPLETED","amount":{"currency_code":"USD","value":"5.00"},"supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`
+	req, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	pay, _ := e.st.GetPayment(orderID)
+	if len(pay.PendingRefunds) != 1 || pay.Refunded != 0 {
+		t.Fatalf("refund should be parked: %+v", pay)
+	}
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(msID, store.MissionPaid)
+	pay, _ = e.st.GetPayment(orderID)
+	spent, _ := e.mandateNumbers(mdID)
+	if pay.Refunded != 5 || pay.Status != store.PaymentPartiallyRefunded || len(pay.PendingRefunds) != 0 || mandate.Round(pay.Amount-spent) != 5 {
+		t.Fatalf("parked refund not applied: %+v spent=%v", pay, spent)
+	}
+}
+
+func TestSyncBooksACaptureOfAWithdrawnOrder(t *testing.T) {
+	// Same situation as above, but the capture is discovered by the
+	// "check status with PayPal" button instead of a webhook.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	_, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	var rj map[string]any
+	e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "no"}, &rj)
+	_, _ = e.pp.Approve(orderID, true)
+	if _, err := e.pp.CaptureOrder(context.Background(), orderID); err != nil {
+		t.Fatal(err)
+	}
+	var synced map[string]any
+	if code := e.post("/api/payments/"+orderID+"/sync", nil, &synced); code != 200 {
+		t.Fatalf("sync: %d %v", code, synced)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if !pay.Accounted || pay.Status != store.PaymentCompleted || spent != pay.Amount || reserved != 0 {
+		t.Fatalf("sync must book the capture: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	pr, _ := e.st.GetProposal(pid)
+	if pr.Status != store.ProposalRejected {
+		t.Fatalf("proposal must stay rejected, got %s", pr.Status)
+	}
+	// a second sync changes nothing
+	e.post("/api/payments/"+orderID+"/sync", nil, &synced)
+	if spent2, _ := e.mandateNumbers(mdID); spent2 != spent {
+		t.Fatalf("second sync double-booked: %v -> %v", spent, spent2)
+	}
+}
+
+func TestDeniedCaptureVoidsOnlyAnOpenOrder(t *testing.T) {
+	e := newEnv(t)
+	mdID, _, orderID := e.startAutoApproved()
+	e.srv.markRefunded(orderID, store.PaymentDenied, 0, "")
+	pay, _ := e.st.GetPayment(orderID)
+	_, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentDenied || reserved != 0 || len(pay.PendingRefunds) != 0 {
+		t.Fatalf("denied capture must void the order: %+v reserved=%v", pay, reserved)
+	}
+	e.srv.markRefunded(orderID, store.PaymentDenied, 0, "") // redelivery is a no-op
+	pay2, _ := e.st.GetPayment(orderID)
+	if pay2.Status != store.PaymentDenied || len(pay2.PendingRefunds) != 0 {
+		t.Fatalf("redelivered denial changed the row: %+v", pay2)
 	}
 }

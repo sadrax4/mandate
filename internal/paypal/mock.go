@@ -18,6 +18,9 @@ type Mock struct {
 	// VaultCompletesOnCreate makes vault_id orders come back COMPLETED with a
 	// capture at creation, which PayPal does for saved PayPal accounts.
 	VaultCompletesOnCreate bool
+	// OnCreate, when set, runs during CreateOrder before the order exists
+	// (tests use it to change state while PayPal is "slow").
+	OnCreate func(req CreateOrderRequest)
 
 	mu     sync.Mutex
 	orders map[string]*mockOrder
@@ -44,6 +47,9 @@ func (m *Mock) Mode() string { return "mock" }
 
 // CreateOrder implements Client.
 func (m *Mock) CreateOrder(_ context.Context, req CreateOrderRequest) (*Order, error) {
+	if m.OnCreate != nil {
+		m.OnCreate(req)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++

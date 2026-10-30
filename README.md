@@ -149,6 +149,8 @@ A cart requires human approval when the mandate says *always ask*, when no auto-
 
 ## Architecture
 
+![Architecture: human, web UI, Go server with policy engine, budget ledger, shopping agent, order assistant and payments; Channel3, Anthropic API and PayPal outside](docs/architecture.png)
+
 ```
  browser (React + AG Grid)  ──SSE/JSON──▶  Go HTTP server (internal/server)
                                               │          │            │

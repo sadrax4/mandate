@@ -94,14 +94,29 @@ func TestFakeAgentGivesUpWhenImpossible(t *testing.T) {
 }
 
 func TestAutoApproveAndHook(t *testing.T) {
+	// The hook owns the transition to awaiting_payment (it creates the order),
+	// so readers never see that status before an order exists.
 	md := mandate.Mandate{Name: "petty cash", Currency: "USD", TotalBudget: 100, AutoApproveUnder: 60}
 	sh, st, id := setup(t, md, "aeropress coffee maker")
 	called := ""
-	sh.OnProposal = func(_ context.Context, p *store.Proposal) error { called = p.Status; return nil }
+	sh.OnProposal = func(_ context.Context, p *store.Proposal) error {
+		called = p.Status
+		_, _ = st.UpdateMission(p.MissionID, func(m *store.Mission) { m.Status = store.MissionAwaitingPayment })
+		return nil
+	}
 	sh.Run(context.Background(), id)
 	m, _ := st.GetMission(id)
 	if m.Status != store.MissionAwaitingPayment || called != store.ProposalAutoApproved {
 		t.Fatalf("status=%s hook=%q", m.Status, called)
+	}
+
+	// A hook that cannot create an order leaves the proposal for a human.
+	sh2, st2, id2 := setup(t, md, "aeropress coffee maker")
+	sh2.OnProposal = func(context.Context, *store.Proposal) error { return context.DeadlineExceeded }
+	sh2.Run(context.Background(), id2)
+	m2, _ := st2.GetMission(id2)
+	if m2.Status != store.MissionAwaitingApproval {
+		t.Fatalf("status=%s, want awaiting_approval when the order could not be created", m2.Status)
 	}
 }
 

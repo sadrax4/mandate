@@ -70,6 +70,21 @@ func (e *env) mandateNumbers(id string) (spent, reserved float64) {
 	return m["spent"].(float64), m["reserved"].(float64)
 }
 
+// tryPost is post for goroutines: it returns the transport error instead of
+// failing the test from a non-test goroutine.
+func (e *env) tryPost(path string, body any, out any) (int, error) {
+	b, _ := json.Marshal(body)
+	resp, err := e.cli.Post(e.ts.URL+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if out != nil {
+		_ = json.NewDecoder(resp.Body).Decode(out)
+	}
+	return resp.StatusCode, nil
+}
+
 func (e *env) post(path string, body any, out any) int {
 	e.t.Helper()
 	b, _ := json.Marshal(body)
@@ -1819,19 +1834,24 @@ func TestDemoMandateIsCreatedOnce(t *testing.T) {
 	type res struct {
 		code int
 		id   string
+		err  error
 	}
 	results := make(chan res, 5)
 	for i := 0; i < 5; i++ {
 		go func() {
 			var out map[string]any
-			code := e.post("/api/mandates/demo", nil, &out)
-			id, _ := out["mandate"].(map[string]any)["id"].(string)
-			results <- res{code, id}
+			code, err := e.tryPost("/api/mandates/demo", nil, &out)
+			m, _ := out["mandate"].(map[string]any)
+			id, _ := m["id"].(string)
+			results <- res{code, id, err}
 		}()
 	}
 	created, ids := 0, map[string]bool{}
 	for i := 0; i < 5; i++ {
 		r := <-results
+		if r.err != nil {
+			t.Fatalf("demo: %v", r.err)
+		}
 		switch r.code {
 		case 201:
 			created++
@@ -1858,11 +1878,17 @@ func TestDemoMandateIsCreatedOnce(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("mandates: %d", len(all))
 	}
-	// a second server over the same file keeps the one demo mandate
+}
+
+func TestConfiguredCurrencyIsNormalised(t *testing.T) {
+	st, _ := store.Open("")
+	t.Cleanup(st.Close)
 	cat := catalog.NewMock()
-	srv2 := New(Config{PublicURL: e.ts.URL, StaticDir: "/nonexistent", Currency: "usd"}, e.st, e.pp, agent.NewShopper(agent.Fake{}, cat, e.st), cat)
-	t.Cleanup(srv2.Close)
-	if srv2.cfg.Currency != "USD" {
-		t.Fatalf("currency not normalised: %q", srv2.cfg.Currency)
+	for in, want := range map[string]string{" usd ": "USD", "": "USD", "  ": "USD", "eur": "EUR"} {
+		srv := New(Config{StaticDir: "/nonexistent", Currency: in}, st, paypal.NewMock("http://x"), agent.NewShopper(agent.Fake{}, cat, st), cat)
+		srv.Close()
+		if srv.cfg.Currency != want {
+			t.Fatalf("CURRENCY=%q -> %q, want %q", in, srv.cfg.Currency, want)
+		}
 	}
 }

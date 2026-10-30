@@ -116,6 +116,7 @@ export default function Ledger() {
             getRowId={(p) => p.data.id}
             onGridReady={(e) => {
               gridApi.current = e.api
+              e.api.setColumnsVisible(['payer_email', 'mode'], details)
             }}
             onRowClicked={(e) => e.data && navigate(`#/missions/${e.data.mission_id}`)}
             rowClass="row-link"

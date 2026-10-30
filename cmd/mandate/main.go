@@ -26,6 +26,11 @@ import (
 var version = "dev"
 
 func main() {
+	// One normalised currency for the catalog, the server and the UI.
+	currency := strings.ToUpper(strings.TrimSpace(env("CURRENCY", "USD")))
+	if currency == "" {
+		currency = "USD"
+	}
 	loadDotEnv(".env")
 	port := env("PORT", "8080")
 	publicURL := env("PUBLIC_URL", "http://localhost:"+port)
@@ -56,7 +61,7 @@ func main() {
 			cat = catalog.NewMock()
 		} else {
 			c3 := catalog.NewChannel3(c3Key, os.Getenv("CHANNEL3_BASE_URL"))
-			c3.Currency = strings.ToUpper(env("CURRENCY", "USD"))
+			c3.Currency = currency
 			cat = c3
 		}
 	case "mock":
@@ -124,7 +129,7 @@ func main() {
 		log.Printf("MAX_MISSIONS_PER_HOUR=%q is not a number: using 40", os.Getenv("MAX_MISSIONS_PER_HOUR"))
 		maxRuns = 40
 	}
-	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns, DemoBuyerHint: os.Getenv("DEMO_BUYER_HINT"), PayPalMCP: env("PAYPAL_MCP", "auto"), PayPalMCPURL: os.Getenv("PAYPAL_MCP_URL")}, st, pp, shopper, cat)
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: currency, Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns, DemoBuyerHint: os.Getenv("DEMO_BUYER_HINT"), PayPalMCP: env("PAYPAL_MCP", "auto"), PayPalMCPURL: os.Getenv("PAYPAL_MCP_URL")}, st, pp, shopper, cat)
 
 	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

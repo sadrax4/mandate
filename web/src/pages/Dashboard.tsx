@@ -54,16 +54,23 @@ export default function Dashboard() {
   const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
   const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
-  // Reveal a mandate card: expand the list if it is hidden, scroll to it, flash it.
+  // Reveal a mandate card: expand the list only if the card is hidden, then
+  // scroll to it and flash it once it is in the DOM.
+  const [revealId, setRevealId] = useState('')
   const reveal = (id: string) => {
-    setShowAll(true)
-    setTimeout(() => {
-      const el = document.getElementById('mandate-' + id)
-      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      el?.classList.add('flash')
-      setTimeout(() => el?.classList.remove('flash'), 1800)
-    }, 50)
+    if (sorted.findIndex((m) => m.id === id) >= VISIBLE) setShowAll(true)
+    setRevealId(id)
   }
+  useEffect(() => {
+    if (!revealId) return
+    const el = document.getElementById('mandate-' + revealId)
+    if (!el) return // not rendered yet: the effect runs again when the list changes
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    el.classList.add('flash')
+    const t = setTimeout(() => el.classList.remove('flash'), 1800)
+    setRevealId('')
+    return () => clearTimeout(t)
+  }, [revealId, showAll, mandates])
   const demo = mandates.find((m) => m.demo)
   // The server creates the demo mandate once and returns it on later clicks.
   const createDemo = async () => {

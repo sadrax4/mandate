@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,7 @@ func TestOpenMigratesLegacyReservations(t *testing.T) {
 	// entity writes are on disk immediately
 	st.PutPayment(&Payment{ID: "D", Status: "CREATED", Amount: 1, Currency: "USD", Reserved: true})
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 3`) {
+	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), fmt.Sprintf(`"version": %d`, currentVersion)) {
 		t.Fatalf("synchronous persistence missing: %s", data)
 	}
 	st.Close()
@@ -89,7 +90,8 @@ func TestOpenMigratesLegacyReservations(t *testing.T) {
 func TestMigrationMarksThePreexistingDemoMandate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data.json")
-	old := `{"version":2,"mandates":{"mnd_b":{"id":"mnd_b","name":"Desk refresh","currency":"USD","total_budget":300,"created_at":"2026-02-01T00:00:00Z"},"mnd_a":{"id":"mnd_a","name":"Desk refresh","currency":"USD","total_budget":300,"created_at":"2026-01-01T00:00:00Z"},"mnd_c":{"id":"mnd_c","name":"Mine","currency":"USD","total_budget":50,"created_at":"2026-03-01T00:00:00Z"}}}`
+	demoShape := `"name":"Desk refresh","currency":"USD","total_budget":300,"max_per_item":150,"auto_approve_under":40`
+	old := `{"version":2,"mandates":{"mnd_b":{"id":"mnd_b",` + demoShape + `,"created_at":"2026-02-01T00:00:00Z"},"mnd_a":{"id":"mnd_a",` + demoShape + `,"created_at":"2026-01-01T00:00:00Z"},"mnd_0":{"id":"mnd_0","name":"Desk refresh","currency":"USD","total_budget":250,"created_at":"2025-01-01T00:00:00Z"},"mnd_c":{"id":"mnd_c","name":"Mine","currency":"USD","total_budget":50,"created_at":"2026-03-01T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +105,7 @@ func TestMigrationMarksThePreexistingDemoMandate(t *testing.T) {
 		if m.Demo {
 			demos++
 			if m.ID != "mnd_a" {
-				t.Fatalf("the oldest Desk refresh is the demo, got %s", m.ID)
+				t.Fatalf("the oldest mandate with the demo shape is the demo (a user's own Desk refresh is not), got %s", m.ID)
 			}
 		}
 	}

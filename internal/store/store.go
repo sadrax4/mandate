@@ -335,15 +335,18 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	if st.s.Version < 3 {
-		// Files written before the Demo flag: the oldest "Desk refresh"
-		// mandate is the one the dashboard button created.
+		// Files written before the Demo flag: the oldest mandate with the
+		// demo button's exact shape is the one it created (ties broken by id).
 		var demo *mandate.Mandate
 		for _, m := range st.s.Mandates {
 			if m.Demo {
 				demo = nil
 				break
 			}
-			if m.Name == "Desk refresh" && (demo == nil || m.CreatedAt.Before(demo.CreatedAt)) {
+			if m.Name != "Desk refresh" || m.TotalBudget != 300 || m.MaxPerItem != 150 || m.AutoApproveUnder != 40 {
+				continue
+			}
+			if demo == nil || m.CreatedAt.Before(demo.CreatedAt) || (m.CreatedAt.Equal(demo.CreatedAt) && m.ID < demo.ID) {
 				demo = m
 			}
 		}

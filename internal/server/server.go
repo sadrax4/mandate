@@ -52,6 +52,9 @@ type Config struct {
 	// PayPalMCPURL overrides the MCP endpoint handed to the Anthropic MCP
 	// connector (default: PayPal's SSE endpoint for the current environment).
 	PayPalMCPURL string
+	// PerClientLimits turns on the per-address limits of a public demo (runs,
+	// searches, PayPal calls, mandates, event streams).
+	PerClientLimits bool
 }
 
 // Server is the HTTP layer.
@@ -64,9 +67,7 @@ type Server struct {
 	catalog catalog.Searcher
 	mux     *http.ServeMux
 
-	rateMu     sync.Mutex
-	rateStarts []time.Time
-	ips        ipWindows // per-client limits for the public demo
+	ips        ipWindows // hourly windows: the global run cap and the per-client limits
 	streamsMu  sync.Mutex
 	streams    map[string]int // open SSE streams per client
 	streamsAll int
@@ -83,6 +84,8 @@ type Server struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	demoMu   sync.Mutex
+	// mandateMu serialises mandate creation against the count cap.
+	mandateMu sync.Mutex
 
 	mcp mcpState
 }
@@ -216,7 +219,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	if !s.ips.allow("search", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+	if !s.ips.allow("search", clientIP(r), 120, s.cfg.PerClientLimits) {
 		writeErr(w, 429, "too many searches from this address; please try again later")
 		return
 	}
@@ -246,7 +249,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	in.ID = store.NewID("mnd")
 	in.Spent, in.Reserved = 0, 0
 	in.VaultID, in.VaultPayer, in.VaultedAt = "", "", nil // only a real checkout can save an account
-	in.Demo = false
+	in.Demo, in.HasSaved = false, false
 	in.CreatedAt = time.Now()
 	in.AllowedCategories = cleanList(in.AllowedCategories)
 	in.BlockedMerchants = cleanList(in.BlockedMerchants)
@@ -254,11 +257,13 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if !s.ips.allow("mandate", clientIP(r), 20, s.cfg.MaxMissionsPerHour > 0) {
+	if !s.ips.allow("mandate", clientIP(r), 20, s.cfg.PerClientLimits) {
 		writeErr(w, 429, "too many mandates created from this address; please try again later")
 		return
 	}
-	if len(s.st.ListMandates()) >= MaxMandates {
+	s.mandateMu.Lock()
+	defer s.mandateMu.Unlock()
+	if s.st.CountMandates() >= MaxMandates {
 		writeErr(w, 409, fmt.Sprintf("this demo keeps at most %d mandates", MaxMandates))
 		return
 	}
@@ -327,7 +332,7 @@ func (s *Server) handleForgetPayment(w http.ResponseWriter, r *http.Request) {
 		break
 	}
 	md, _ = s.st.GetMandate(md.ID)
-	writeJSON(w, 200, md)
+	writeJSON(w, 200, mandateView(md))
 }
 
 func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {
@@ -407,18 +412,31 @@ func (s *Server) startAgent(m *store.Mission, feedback string) {
 
 // startRun runs a standing order's goal once more as a new mission and
 // schedules the next run. It is used by the scheduler and by "Run now".
-func (s *Server) startRun(parent *store.Mission, why string) (*store.Mission, error) {
+// standingOrderReady checks that a standing order can run: it is one, and
+// its mandate still has budget. A mandate whose budget is spent stops the
+// order for good (the README promises that), before a model turn is spent;
+// money merely reserved by an open order does not count.
+func (s *Server) standingOrderReady(parent *store.Mission) error {
 	if parent.RepeatDays <= 0 {
-		return nil, &httpError{409, "this mission is not a standing order"}
+		return &httpError{409, "this mission is not a standing order"}
 	}
-	if md, err := s.st.GetMandate(parent.MandateID); err != nil || md.Remaining() <= 0 {
-		// The README promises a standing order stops the moment the budget
-		// runs out: stop it here, before a model turn is spent.
+	md, err := s.st.GetMandate(parent.MandateID)
+	if err != nil {
+		return &httpError{404, "mandate not found"}
+	}
+	if md.Spent >= md.TotalBudget {
 		_, _ = s.st.UpdateMission(parent.ID, func(m *store.Mission) { m.RepeatDays = 0; m.NextRunAt = nil })
 		s.st.AddEvent(parent.ID, "status", "standing order stopped: the mandate's budget is used up", map[string]any{"repeat_days": 0})
-		return nil, &httpError{409, "the mandate's budget is used up; the standing order has been stopped"}
+		return &httpError{409, "the mandate's budget is used up; the standing order has been stopped"}
 	}
-	if !s.allowMissionStart() {
+	return nil
+}
+
+func (s *Server) startRun(parent *store.Mission, why string, counted bool) (*store.Mission, error) {
+	if err := s.standingOrderReady(parent); err != nil {
+		return nil, err
+	}
+	if !counted && !s.allowMissionStart() {
 		return nil, &httpError{429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour)}
 	}
 	run := &store.Mission{ID: store.NewID("msn"), MandateID: parent.MandateID, Goal: parent.Goal, Status: store.MissionRunning, Kind: parent.Kind, RepeatOf: parent.ID, CreatedAt: time.Now()}
@@ -443,7 +461,7 @@ func (s *Server) runDueRepeats(now time.Time) int {
 		if m.RepeatDays <= 0 || m.NextRunAt == nil || m.NextRunAt.After(now) {
 			continue
 		}
-		if _, err := s.startRun(m, "scheduled"); err != nil {
+		if _, err := s.startRun(m, "scheduled", false); err != nil {
 			log.Printf("standing order %s: %v", m.ID, err)
 			continue
 		}
@@ -471,11 +489,20 @@ func (s *Server) handleRunNow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "mission not found")
 		return
 	}
-	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.MaxMissionsPerHour > 0) {
-		writeErr(w, 429, "too many agent runs from this address; please try again later")
+	if err := s.standingOrderReady(m); err != nil { // refused for free, before any slot is spent
+		var he *httpError
+		if errors.As(err, &he) {
+			writeErr(w, he.code, he.msg)
+			return
+		}
+		writeErr(w, 500, err.Error())
 		return
 	}
-	run, err := s.startRun(m, "run now")
+	if !s.allowRunFrom(r) {
+		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+		return
+	}
+	run, err := s.startRun(m, "run now", true)
 	if err != nil {
 		var he *httpError
 		if errors.As(err, &he) {
@@ -504,43 +531,32 @@ func (s *Server) handleStopRepeat(w http.ResponseWriter, r *http.Request) {
 }
 
 // allowRunFrom is allowMissionStart plus a per-client share of the cap, so
-// one address cannot use up every judge's hour.
+// one address cannot use up every judge's hour. A refusal costs the client
+// nothing: the global window is checked before the client's slot is taken.
 func (s *Server) allowRunFrom(r *http.Request) bool {
-	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.MaxMissionsPerHour > 0) {
+	if s.cfg.MaxMissionsPerHour > 0 && !s.ips.room("run", "*", s.cfg.MaxMissionsPerHour) {
+		return false
+	}
+	if !s.ips.allow("run", clientIP(r), runsPerClient(s.cfg.MaxMissionsPerHour), s.cfg.PerClientLimits) {
 		return false
 	}
 	return s.allowMissionStart()
 }
 
-// runsPerClient is one address's share of the hourly run cap.
+// runsPerClient is one address's share of the hourly run cap: three quarters
+// of it, so a room of judges behind one address is not starved, and never
+// fewer than ten.
 func runsPerClient(capPerHour int) int {
-	if n := capPerHour / 2; n > 5 {
+	if n := capPerHour * 3 / 4; n > 10 {
 		return n
 	}
-	return 5
+	return 10
 }
 
-// allowMissionStart enforces the per-hour cap on agent runs (missions and
-// rejections both start a run).
+// allowMissionStart enforces the global per-hour cap on agent runs (missions
+// and rejections both start a run).
 func (s *Server) allowMissionStart() bool {
-	if s.cfg.MaxMissionsPerHour <= 0 {
-		return true
-	}
-	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-	cutoff := time.Now().Add(-time.Hour)
-	kept := s.rateStarts[:0]
-	for _, t := range s.rateStarts {
-		if t.After(cutoff) {
-			kept = append(kept, t)
-		}
-	}
-	s.rateStarts = kept
-	if len(s.rateStarts) >= s.cfg.MaxMissionsPerHour {
-		return false
-	}
-	s.rateStarts = append(s.rateStarts, time.Now())
-	return true
+	return s.ips.allow("run", "*", s.cfg.MaxMissionsPerHour, s.cfg.MaxMissionsPerHour > 0)
 }
 
 // handleApplySuggestion lets a human accept the agent's suggested mandate
@@ -625,11 +641,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "streaming unsupported")
 		return
 	}
-	if !s.openStream(clientIP(r)) {
+	if s.cfg.PerClientLimits && !s.openStream(clientIP(r)) {
 		writeErr(w, 503, "too many open event streams; close some tabs and retry")
 		return
 	}
-	defer s.closeStream(clientIP(r))
+	if s.cfg.PerClientLimits {
+		defer s.closeStream(clientIP(r))
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -667,7 +685,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // --- proposals & payments ---
 
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
-	if !s.ips.allow("paypal", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+	if !s.ips.allow("paypal", clientIP(r), 120, s.cfg.PerClientLimits) {
 		writeErr(w, 429, "too many PayPal requests from this address; please try again later")
 		return
 	}
@@ -1124,7 +1142,7 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 // order is captured here; if PayPal already shows it completed, our ledger is
 // reconciled. This is what a merchant would normally do from a webhook.
 func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
-	if !s.ips.allow("paypal", clientIP(r), 60, s.cfg.MaxMissionsPerHour > 0) {
+	if !s.ips.allow("paypal", clientIP(r), 120, s.cfg.PerClientLimits) {
 		writeErr(w, 429, "too many PayPal requests from this address; please try again later")
 		return
 	}
@@ -1672,34 +1690,58 @@ func (s *Server) staticHandler() http.Handler {
 
 // ipWindows counts events per client and kind over the last hour.
 type ipWindows struct {
-	mu   sync.Mutex
-	hits map[string][]time.Time
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+	sweeps int
 }
 
-// allow records one event for key kind:ip and reports whether it stays
-// under limit per hour. Disabled (always true) unless the demo cap is on.
-func (w *ipWindows) allow(kind, ip string, limit int, enabled bool) bool {
-	if !enabled || ip == "" {
-		return true
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
+// prune drops the timestamps older than an hour for one key and, now and
+// then, every key whose window is empty, so a flood of addresses cannot grow
+// memory without end and nobody's counter is ever reset early. Call with
+// the lock held.
+func (w *ipWindows) prune(key string) []time.Time {
 	if w.hits == nil {
 		w.hits = map[string][]time.Time{}
 	}
-	if len(w.hits) > 10000 { // an address flood must not grow memory without end
-		w.hits = map[string][]time.Time{}
-	}
-	key := kind + ":" + ip
 	cutoff := time.Now().Add(-time.Hour)
+	if w.sweeps++; w.sweeps%1000 == 0 || len(w.hits) > 50000 {
+		for k, ts := range w.hits {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(w.hits, k)
+			}
+		}
+	}
 	kept := w.hits[key][:0]
 	for _, t := range w.hits[key] {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
+	w.hits[key] = kept
+	return kept
+}
+
+// room reports whether kind:ip is under limit per hour without recording.
+func (w *ipWindows) room(kind, ip string, limit int) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.prune(kind+":"+ip)) < limit
+}
+
+// allow records one event for key kind:ip and reports whether it stays
+// under limit per hour. Disabled (always true) unless enabled.
+func (w *ipWindows) allow(kind, ip string, limit int, enabled bool) bool {
+	if !enabled || ip == "" {
+		return true
+	}
+	if len(ip) > 64 {
+		ip = ip[:64]
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := kind + ":" + ip
+	kept := w.prune(key)
 	if len(kept) >= limit {
-		w.hits[key] = kept
 		return false
 	}
 	w.hits[key] = append(kept, time.Now())
@@ -1707,8 +1749,10 @@ func (w *ipWindows) allow(kind, ip string, limit int, enabled bool) bool {
 }
 
 // clientIP is the address a request came from. Behind the compose profile's
-// reverse proxy the socket peer is a private address and the proxy sets
-// X-Forwarded-For; a public peer is trusted as is.
+// reverse proxy the socket peer is a private address and the proxy appends
+// the real client to X-Forwarded-For: the last entry is the one the proxy
+// itself wrote, earlier ones are whatever the client claimed. A public peer
+// is trusted as is and its headers are ignored.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -1716,8 +1760,9 @@ func clientIP(r *http.Request) string {
 	}
 	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-				return first
+			parts := strings.Split(xff, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
 			}
 		}
 	}
@@ -1726,7 +1771,7 @@ func clientIP(r *http.Request) string {
 
 const (
 	maxStreams      = 500
-	maxStreamsPerIP = 20
+	maxStreamsPerIP = 40
 )
 
 func (s *Server) openStream(ip string) bool {

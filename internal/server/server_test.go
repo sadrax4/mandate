@@ -1978,19 +1978,19 @@ func TestPerClientLimitsOnThePublicDemo(t *testing.T) {
 	t.Cleanup(st.Close)
 	cat := catalog.NewMock()
 	ts := httptest.NewServer(nil)
-	srv := New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", MaxMissionsPerHour: 40}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
+	srv := New(Config{PublicURL: ts.URL, StaticDir: "/nonexistent", MaxMissionsPerHour: 40, PerClientLimits: true}, st, paypal.NewMock(ts.URL), agent.NewShopper(agent.Fake{}, cat, st), cat)
 	ts.Config.Handler = srv.Handler()
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
 	e := &env{t: t, ts: ts, st: st, cli: &http.Client{}}
 	var out map[string]any
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 120; i++ {
 		if code := e.get("/api/products/search?q=keyboard", &out); code != 200 {
 			t.Fatalf("search %d: %d", i, code)
 		}
 	}
 	if code := e.get("/api/products/search?q=keyboard", &out); code != 429 {
-		t.Fatalf("61st search from one address must be refused, got %d", code)
+		t.Fatalf("121st search from one address must be refused, got %d", code)
 	}
 	for i := 0; i < 20; i++ {
 		if code := e.post("/api/mandates", map[string]any{"name": "m", "total_budget": 100}, &out); code != 201 {
@@ -2000,7 +2000,8 @@ func TestPerClientLimitsOnThePublicDemo(t *testing.T) {
 	if code := e.post("/api/mandates", map[string]any{"name": "m", "total_budget": 100}, &out); code != 429 {
 		t.Fatalf("21st mandate from one address must be refused, got %d", code)
 	}
-	// a forwarded address behind the compose proxy counts separately
+	// a forwarded address behind the compose proxy counts separately: the
+	// proxy's own (last) entry is used, never what the client claimed
 	req, _ := http.NewRequest("GET", ts.URL+"/api/products/search?q=keyboard", nil)
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	resp, err := e.cli.Do(req)
@@ -2010,6 +2011,24 @@ func TestPerClientLimitsOnThePublicDemo(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("another client must not be limited by the first: %d", resp.StatusCode)
+	}
+	if got := clientIP(&http.Request{RemoteAddr: "10.0.0.2:4000", Header: http.Header{"X-Forwarded-For": {"1.2.3.4, 203.0.113.9"}}}); got != "203.0.113.9" {
+		t.Fatalf("clientIP behind a proxy = %q", got)
+	}
+	if got := clientIP(&http.Request{RemoteAddr: "198.51.100.7:4000", Header: http.Header{"X-Forwarded-For": {"1.2.3.4"}}}); got != "198.51.100.7" {
+		t.Fatalf("a public peer's header must be ignored: %q", got)
+	}
+	// a refused run costs the client nothing: the global cap is checked first
+	srv.cfg.MaxMissionsPerHour = 0
+	srv.cfg.MaxMissionsPerHour = 1
+	_ = srv.allowMissionStart() // the one global slot is gone
+	for i := 0; i < 3; i++ {
+		if srv.allowRunFrom(&http.Request{RemoteAddr: "203.0.113.50:1"}) {
+			t.Fatal("global cap must refuse")
+		}
+	}
+	if !srv.ips.room("run", "203.0.113.50", 1) {
+		t.Fatal("a globally refused run must not spend the client's own slot")
 	}
 }
 

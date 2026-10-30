@@ -139,7 +139,7 @@ func (m Mandate) Amend(field string, value any) (Mandate, string, error) {
 		var removed []string
 		var keep []string
 		for _, b := range out.BlockedMerchants {
-			if contains(xs, strings.ToLower(b)) {
+			if MerchantBlocked(b, xs) { // the same matching the rule itself uses
 				removed = append(removed, b)
 			} else {
 				keep = append(keep, b)
@@ -237,10 +237,6 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 	for _, c := range m.AllowedCategories {
 		allowed[strings.ToLower(strings.TrimSpace(c))] = true
 	}
-	blocked := map[string]bool{}
-	for _, b := range m.BlockedMerchants {
-		blocked[strings.ToLower(strings.TrimSpace(b))] = true
-	}
 	for _, it := range cart.Items {
 		if it.Quantity <= 0 {
 			d.Violations = append(d.Violations, Violation{Code: "bad_quantity", Message: fmt.Sprintf("%q has quantity %d", it.Title, it.Quantity), ProductID: it.ProductID})
@@ -275,7 +271,7 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 		if len(allowed) > 0 {
 			d.Checks = append(d.Checks, "allowed_categories")
 		}
-		if len(blocked) > 0 {
+		if len(m.BlockedMerchants) > 0 {
 			d.Checks = append(d.Checks, "no_blocked_merchants")
 		}
 		if m.MinRating > 0 {

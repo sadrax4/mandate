@@ -126,6 +126,7 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `STATIC_DIR` | `web/dist` | Built UI |
 | `CURRENCY` | `USD` | Default mandate currency |
 | `MAX_MISSIONS_PER_HOUR` | `40` | Server-wide cap on agent runs per hour, so a public demo cannot drain the model budget (`0` = unlimited) |
+| `PER_CLIENT_LIMITS` | `1` | Per-address limits on agent runs, searches, PayPal calls, mandate creation and open event streams (`0` turns them off). |
 | `DEMO_BUYER_HINT` | | Text shown next to the PayPal button, e.g. the sandbox buyer login testers should use |
 
 The server also reads a `.env` file in the working directory.

@@ -21,12 +21,13 @@ mkdir -p "$DIR/data"
 cd "$DIR"
 echo "Downloading $URL"
 curl -fsSL -o mandate.tar.gz "$URL"
-# The release publishes a checksum next to the archive: refuse a download that does not match it.
-if curl -fsSL -o mandate.tar.gz.sha256 "$URL.sha256" 2>/dev/null; then
-  if command -v sha256sum >/dev/null 2>&1; then
-    echo "$(awk '{print $1}' mandate.tar.gz.sha256)  mandate.tar.gz" | sha256sum -c - >/dev/null
-    echo "Checksum verified"
-  fi
+# The release publishes a checksum next to the archive: a download that cannot
+# be verified is not installed (set MANDATE_SKIP_CHECKSUM=1 to override).
+if [ "${MANDATE_SKIP_CHECKSUM:-0}" != "1" ]; then
+  curl -fsSL -o mandate.tar.gz.sha256 "$URL.sha256" || { echo "Could not download the checksum ($URL.sha256); refusing to install an unverified build." >&2; exit 1; }
+  command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is missing; install coreutils or set MANDATE_SKIP_CHECKSUM=1." >&2; exit 1; }
+  echo "$(awk '{print $1}' mandate.tar.gz.sha256)  mandate.tar.gz" | sha256sum -c - >/dev/null || { echo "Checksum mismatch: the download does not match the release." >&2; exit 1; }
+  echo "Checksum verified"
   rm -f mandate.tar.gz.sha256
 fi
 tar xzf mandate.tar.gz
@@ -66,7 +67,7 @@ User=$SVC_USER
 Group=$SVC_USER
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+$( case "$DIR" in /home/*|/root/*) ;; *) echo "ProtectHome=yes";; esac )
 PrivateTmp=yes
 ReadWritePaths=$DIR/data
 AmbientCapabilities=CAP_NET_BIND_SERVICE

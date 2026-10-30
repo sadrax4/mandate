@@ -134,3 +134,11 @@ func TestRedactedHidesTheToken(t *testing.T) {
 		t.Fatalf("redacted = %+v", r)
 	}
 }
+
+func TestAmendUnblocksByDomain(t *testing.T) {
+	m := Mandate{Name: "x", Currency: "USD", TotalBudget: 100, BlockedMerchants: []string{"https://www.Shein.com/", "temu.com"}}
+	out, desc, err := m.Amend("blocked_merchants", []any{"shein.com"})
+	if err != nil || len(out.BlockedMerchants) != 1 || out.BlockedMerchants[0] != "temu.com" || !strings.Contains(desc, "unblock") {
+		t.Fatalf("amend: %v %q %v", out.BlockedMerchants, desc, err)
+	}
+}

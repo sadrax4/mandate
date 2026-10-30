@@ -639,6 +639,13 @@ func (st *Store) UpdatePayment(id string, fn func(p *Payment)) (*Payment, error)
 	return &c, nil
 }
 
+// CountMandates returns how many mandates exist.
+func (st *Store) CountMandates() int {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return len(st.s.Mandates)
+}
+
 // reservedTotals is the one place that defines what counts as reserved:
 // every payment row still holding a reservation, summed per mandate.
 // Call with the lock held.

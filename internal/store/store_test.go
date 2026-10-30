@@ -1,7 +1,9 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,4 +55,33 @@ func TestSubscribeDelivers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("event not delivered")
 	}
+}
+
+func TestOpenMigratesLegacyReservations(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.json")
+	legacy := `{"mandates":{},"missions":{},"proposals":{},"payments":{
+	  "A":{"id":"A","status":"PAYER_ACTION_REQUIRED","amount":10,"currency":"USD"},
+	  "B":{"id":"B","status":"COMPLETED","amount":5,"currency":"USD"},
+	  "C":{"id":"C","status":"CANCELLED","amount":7,"currency":"USD"}},"events":[],"event_seq":0}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := st.GetPayment("A")
+	b, _ := st.GetPayment("B")
+	c, _ := st.GetPayment("C")
+	if !a.Reserved || b.Reserved || c.Reserved {
+		t.Fatalf("migration: A=%v B=%v C=%v", a.Reserved, b.Reserved, c.Reserved)
+	}
+	// entity writes are on disk immediately
+	st.PutPayment(&Payment{ID: "D", Status: "CREATED", Amount: 1, Currency: "USD", Reserved: true})
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 1`) {
+		t.Fatalf("synchronous persistence missing: %s", data)
+	}
+	st.Close()
 }

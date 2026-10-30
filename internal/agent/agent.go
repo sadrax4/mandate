@@ -78,7 +78,26 @@ func (s *Shopper) Forget(missionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, missionID)
-	delete(s.runLocks, missionID)
+	s.dropLockIfIdle(missionID)
+	for i, id := range s.order {
+		if id == missionID {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// dropLockIfIdle removes a mission's run lock only when nobody holds it, so
+// an in-flight turn keeps serialising against later runs. Call with s.mu held.
+func (s *Shopper) dropLockIfIdle(missionID string) {
+	l, ok := s.runLocks[missionID]
+	if !ok {
+		return
+	}
+	if l.TryLock() {
+		l.Unlock()
+		delete(s.runLocks, missionID)
+	}
 }
 
 // runLock serialises agent runs per mission: a rejection arriving while the
@@ -211,11 +230,16 @@ func (s *Shopper) session(missionID string, replace bool) Session {
 	s.sessions[missionID] = sess
 	for len(s.sessions) > maxSessions && len(s.order) > 0 {
 		oldest := s.order[0]
-		s.order = s.order[1:]
-		if oldest != missionID {
-			delete(s.sessions, oldest)
-			delete(s.runLocks, oldest)
+		if oldest == missionID { // never evict the session being created; rotate it to the back
+			s.order = append(s.order[1:], oldest)
+			if len(s.order) == 1 {
+				break
+			}
+			continue
 		}
+		s.order = s.order[1:]
+		delete(s.sessions, oldest)
+		s.dropLockIfIdle(oldest)
 	}
 	return sess
 }
@@ -470,7 +494,12 @@ func (s *Shopper) buildCart(ctx context.Context, missionID string, items []cartI
 	}
 	cart := mandate.Cart{Currency: md.Currency}
 	for _, it := range items {
-		p, err := s.Catalog.Get(ctx, it.ProductID)
+		var p *catalog.Product
+		if cg, ok := s.Catalog.(catalog.CurrencyGetter); ok {
+			p, err = cg.GetIn(ctx, it.ProductID, md.Currency)
+		} else {
+			p, err = s.Catalog.Get(ctx, it.ProductID)
+		}
 		if err != nil {
 			return nil, mandate.Cart{}, fmt.Errorf("product %q: %w", it.ProductID, err)
 		}

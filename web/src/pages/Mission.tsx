@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, RowClassRules } from 'ag-grid-community'
-import { api, label, money, type CartItem, type Config, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
+import { api, isFinalPayment, label, money, type CartItem, type Config, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
@@ -158,7 +158,6 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
       { field: 'merchant', headerName: 'Merchant', minWidth: 100, maxWidth: 140 },
       { field: 'quantity', headerName: 'Qty', maxWidth: 64, type: 'rightAligned', filter: false },
       { headerName: 'Line', valueGetter: (p) => (p.data ? p.data.unit_price * p.data.quantity : 0), valueFormatter: (p) => money(p.value, p.data?.currency), type: 'rightAligned', maxWidth: 100, filter: false },
-      { field: 'reason', headerName: "Agent's reason", flex: 3, minWidth: 220, wrapText: true, autoHeight: true, filter: false },
     ],
     [],
   )
@@ -224,7 +223,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const banner = params.get('payment')
   if (!detail || !mission) return <div className="page">{err ? <div className="alert bad">{err}</div> : <Empty>Loading mission…</Empty>}</div>
 
-  const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !['COMPLETED', 'CANCELLED', 'VOIDED', 'EXPIRED', 'REFUNDED'].includes(payment.status)
+  const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status)
   const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'
   const remaining = mandate ? mandate.total_budget - mandate.spent - mandate.reserved : 0
 
@@ -309,6 +308,16 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
           {latest ? (
             <Card title={`Proposal ${proposals.length > 1 ? `#${proposals.length}` : ''}`} action={<Pill status={latest.status} />}>
               <Grid<CartItem> rowData={latest.cart.items} columnDefs={itemCols} getRowId={(p) => p.data.product_id} />
+              {latest.cart.items.some((i) => i.reason) && (
+                <ul className="reasons">
+                  {latest.cart.items.map((i) => (
+                    <li key={i.product_id}>
+                      <b>{i.title}</b>
+                      {i.reason ? <span> · {i.reason}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div className="totals">
                 <span>
                   Total <b>{money(latest.decision.total, latest.decision.currency)}</b>
@@ -326,7 +335,12 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                   <span key={i} className="check-bad">⛔ {v.message}</span>
                 ))}
               </div>
-              {latest.summary && <div className="summary md"><Markdown text={latest.summary} /></div>}
+              {latest.summary && (
+                <div className="summary md">
+                  <div className="summary-label">Why this cart</div>
+                  <Markdown text={latest.summary} />
+                </div>
+              )}
               {latest.feedback && <div className="alert warn">Your feedback: {latest.feedback}</div>}
 
               {canDecide && (
@@ -388,7 +402,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <dt>Checkout</dt>
                 <dd>{payment.vaulted ? 'none: paid with the PayPal account saved on this mandate' : 'PayPal checkout, approved by the buyer'}</dd>
               </dl>
-              {payment.approve_url && payment.status !== 'COMPLETED' && payment.status !== 'CANCELLED' && (
+              {payment.approve_url && !isFinalPayment(payment.status) && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
                   <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>
                   <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
@@ -398,8 +412,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
             </Card>
           )}
 
-          {mission.summary && mission.status !== 'no_proposal' && (
-            <Card title="Agent's summary" className="mt">
+          {mission.summary && mission.status !== 'no_proposal' && mission.summary.trim() !== (latest?.summary ?? '').trim() && (
+            <Card title="Agent's final note" className="mt">
               <div className="summary md"><Markdown text={mission.summary} /></div>
             </Card>
           )}

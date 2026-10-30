@@ -14,6 +14,7 @@ import (
 
 	"mandate/internal/agent"
 	"mandate/internal/catalog"
+	"mandate/internal/mandate"
 	"mandate/internal/paypal"
 	"mandate/internal/store"
 )
@@ -420,11 +421,111 @@ func TestCancelThenLateCaptureKeepsBooksStraight(t *testing.T) {
 	r.Body.Close()
 	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, orderID))
 	r.Body.Close()
+	// A cancelled order is never captured: the approver saw "cancelled" and
+	// the agent may already be working on a replacement.
 	pay, _ := e.st.GetPayment(orderID)
 	spent, reserved := e.mandateNumbers(mdID)
-	if pay.Status != "COMPLETED" || spent != pay.Amount || reserved != 0 {
-		t.Fatalf("late capture: status=%s spent=%v reserved=%v amount=%v", pay.Status, spent, reserved, pay.Amount)
+	if pay.Status != store.PaymentCancelled || spent != 0 || reserved != 0 || pay.CaptureID != "" {
+		t.Fatalf("late return after cancel: status=%s spent=%v reserved=%v capture=%q", pay.Status, spent, reserved, pay.CaptureID)
 	}
+}
+
+func TestWithdrawnOrderIsNeverCaptured(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	msID, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "changed my mind"}, &rj); code != 200 {
+		t.Fatalf("withdraw: %d %v", code, rj)
+	}
+	// the buyer still approves on the (stale) PayPal tab and lands on /paypal/return
+	r, _ := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {orderID}, "action": {"approve"}})
+	r.Body.Close()
+	r, _ = e.cli.Get(fmt.Sprintf("%s/paypal/return?token=%s", e.ts.URL, orderID))
+	r.Body.Close()
+	if !strings.Contains(r.Header.Get("Location"), "payment=cancelled") {
+		t.Fatalf("return should report cancelled, got %s", r.Header.Get("Location"))
+	}
+	// and PayPal also sends CHECKOUT.ORDER.APPROVED
+	body := `{"id":"WH-9","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"APPROVED"}}`
+	req, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	e.waitMission(msID, store.MissionAwaitingApproval) // the agent revised; no new order without auto-approval
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentCancelled || pay.CaptureID != "" || spent != 0 || reserved != 0 {
+		t.Fatalf("withdrawn order captured: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	if o, _ := e.pp.GetOrder(context.Background(), orderID); o.Status == "COMPLETED" {
+		t.Fatal("PayPal order must not have been captured")
+	}
+}
+
+func TestPartialRefundCreditsOnlyTheRefundedAmount(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	out := e.waitMission(msID, store.MissionAwaitingPayment)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(msID, store.MissionPaid)
+	spent0, _ := e.mandateNumbers(mdID)
+	send := func(amount string) {
+		body := `{"id":"WH-r","event_type":"PAYMENT.CAPTURE.REFUNDED","resource_type":"refund","resource":{"id":"R1","status":"COMPLETED","amount":{"currency_code":"USD","value":"` + amount + `"},"supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`
+		req, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body))
+		req.Header.Set("Paypal-Transmission-Sig", "mock")
+		resp, err := e.cli.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	send("10.00")
+	pay, _ := e.st.GetPayment(orderID)
+	spent1, _ := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentPartiallyRefunded || pay.Refunded != 10 || mandate.Round(spent0-spent1) != 10 {
+		t.Fatalf("partial refund: %+v spent %v -> %v", pay, spent0, spent1)
+	}
+	out = e.waitMission(msID, store.MissionPaid) // still paid
+	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
+		t.Fatal("partial refund must not mark the proposal refunded")
+	}
+	// the same delivery again must not credit twice; a full refund credits the rest and no more
+	send("10.00")
+	send("1000.00")
+	pay, _ = e.st.GetPayment(orderID)
+	spent2, _ := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentRefunded || pay.Refunded != pay.Amount || spent2 != 0 {
+		t.Fatalf("full refund: %+v spent=%v", pay, spent2)
+	}
+	e.waitMission(msID, store.MissionRefunded)
+}
+
+func TestDeniedCaptureBeforeCompletionReleasesReservation(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	body := `{"id":"WH-d","event_type":"PAYMENT.CAPTURE.DENIED","resource_type":"capture","resource":{"id":"C1","status":"DENIED","amount":{"currency_code":"USD","value":"39.95"},"supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`
+	req, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	pay, _ := e.st.GetPayment(orderID)
+	_, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentDenied || pay.Reserved || reserved != 0 {
+		t.Fatalf("denied before capture: %+v reserved=%v", pay, reserved)
+	}
+	e.waitMission(msID, store.MissionCancelled)
 }
 
 func TestSyncVoidedOrderReleasesReservation(t *testing.T) {

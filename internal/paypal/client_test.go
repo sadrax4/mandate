@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRESTOrdersFlow(t *testing.T) {
@@ -263,5 +265,16 @@ func TestMockVault(t *testing.T) {
 	m.Revoke(c.VaultID)
 	if _, err := m.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 7, VaultID: c.VaultID}); err == nil {
 		t.Fatal("revoked token should fail")
+	}
+}
+
+func TestCutBytesKeepsRunesWhole(t *testing.T) {
+	s := strings.Repeat("é", 70) // 140 bytes
+	out := cutBytes(s, 127)
+	if len(out) > 127 || !utf8.ValidString(out) || out != strings.Repeat("é", 63) {
+		t.Fatalf("cut = %q (%d bytes)", out, len(out))
+	}
+	if cutBytes("short", 127) != "short" {
+		t.Fatal("short strings must pass through")
 	}
 }

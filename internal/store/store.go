@@ -30,6 +30,31 @@ const (
 	MissionRefunded         = "refunded"
 )
 
+// Payment status values Mandate assigns itself (PayPal's own order and
+// capture statuses are stored as PayPal reports them).
+const (
+	PaymentCancelled         = "CANCELLED"
+	PaymentVoided            = "VOIDED"
+	PaymentExpired           = "EXPIRED"
+	PaymentCompleted         = "COMPLETED"
+	PaymentRefunded          = "REFUNDED"
+	PaymentPartiallyRefunded = "PARTIALLY_REFUNDED"
+	PaymentReversed          = "REVERSED"
+	PaymentDenied            = "DENIED"
+	PaymentCaptureFailed     = "CAPTURE_FAILED"
+)
+
+// IsFinalPayment reports whether a payment status can never become payable
+// again: it was captured (possibly refunded afterwards) or it was given up.
+// Every money path must consult this one predicate.
+func IsFinalPayment(status string) bool {
+	switch status {
+	case PaymentCompleted, PaymentPartiallyRefunded, PaymentCancelled, PaymentVoided, PaymentExpired, PaymentRefunded, PaymentReversed, PaymentDenied:
+		return true
+	}
+	return false
+}
+
 // Proposal status values.
 const (
 	ProposalPending          = "pending_approval"
@@ -140,7 +165,9 @@ type Payment struct {
 	Reserved bool `json:"reserved"`
 	// Vaulted is true when the order was paid with the PayPal account saved
 	// on the mandate, without a checkout hop.
-	Vaulted   bool      `json:"vaulted"`
+	Vaulted bool `json:"vaulted"`
+	// Refunded is the total given back so far (partial refunds accumulate).
+	Refunded  float64   `json:"refunded,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -156,6 +183,7 @@ type Event struct {
 }
 
 type state struct {
+	Version   int                         `json:"version"`
 	Mandates  map[string]*mandate.Mandate `json:"mandates"`
 	Missions  map[string]*Mission         `json:"missions"`
 	Proposals map[string]*Proposal        `json:"proposals"`
@@ -164,9 +192,14 @@ type state struct {
 	EventSeq  int64                       `json:"event_seq"`
 }
 
-// Store is safe for concurrent use. Writes are persisted to the JSON file
-// asynchronously, at most a few times per second, so bursts of agent events
-// do not rewrite the file on every change; Close flushes what is pending.
+// currentVersion is bumped when a one-time migration is added to Open.
+const currentVersion = 1
+
+// Store is safe for concurrent use. Entity writes (mandates, missions,
+// proposals, payments) are written to the JSON file synchronously, so a
+// money transition acknowledged to PayPal or to the browser is on disk by
+// then. Events, which arrive in bursts while the agent works, are saved at
+// most a few times per second; Close flushes what is pending.
 type Store struct {
 	mu   sync.RWMutex
 	path string
@@ -175,6 +208,7 @@ type Store struct {
 
 	saveMu    sync.Mutex
 	saveTimer *time.Timer
+	fileMu    sync.Mutex // serialises writes of the data file
 }
 
 // ErrNotFound is returned for unknown IDs.
@@ -206,7 +240,41 @@ func Open(path string) (*Store, error) {
 			m.Error = "server restarted while the agent was running; start a new mission"
 		}
 	}
+	if st.s.Version < 1 {
+		// Payments written before the Reserved flag existed hold a budget
+		// reservation whenever they are still payable; mark them so a later
+		// cancel, void or capture releases it exactly once.
+		for _, p := range st.s.Payments {
+			if !IsFinalPayment(p.Status) {
+				p.Reserved = true
+			}
+		}
+	}
+	st.s.Version = currentVersion
 	return st, nil
+}
+
+// persistNow writes the state synchronously. The caller holds st.mu.
+func (st *Store) persistNow() {
+	if st.path == "" {
+		return
+	}
+	data, err := json.MarshalIndent(st.s, "", "  ")
+	if err != nil {
+		return
+	}
+	st.writeFile(data)
+}
+
+// writeFile replaces the data file atomically; concurrent writers queue.
+func (st *Store) writeFile(data []byte) {
+	st.fileMu.Lock()
+	defer st.fileMu.Unlock()
+	_ = os.MkdirAll(filepath.Dir(st.path), 0o755)
+	tmp := st.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err == nil {
+		_ = os.Rename(tmp, st.path)
+	}
 }
 
 // persist schedules a save. It is called with st.mu held, so it must not
@@ -232,14 +300,12 @@ func (st *Store) flush() {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(st.path), 0o755)
-	tmp := st.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err == nil {
-		_ = os.Rename(tmp, st.path)
-	}
+	st.writeFile(data)
 }
 
-// Close writes any pending change to disk. Call it on shutdown.
+// Close writes any pending change to disk. Call it on shutdown. A flush that
+// already fired finishes first (writes are serialised), and the final write
+// below is atomic, so the file is never left torn.
 func (st *Store) Close() {
 	if st.path == "" {
 		return
@@ -267,7 +333,7 @@ func (st *Store) PutMandate(m *mandate.Mandate) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.s.Mandates[m.ID] = m
-	st.persist()
+	st.persistNow()
 }
 
 func (st *Store) GetMandate(id string) (*mandate.Mandate, error) {
@@ -304,7 +370,7 @@ func (st *Store) UpdateMandate(id string, fn func(m *mandate.Mandate) error) err
 	if err := fn(m); err != nil {
 		return err
 	}
-	st.persist()
+	st.persistNow()
 	return nil
 }
 
@@ -315,7 +381,7 @@ func (st *Store) PutMission(m *Mission) {
 	defer st.mu.Unlock()
 	m.UpdatedAt = time.Now()
 	st.s.Missions[m.ID] = m
-	st.persist()
+	st.persistNow()
 }
 
 func (st *Store) GetMission(id string) (*Mission, error) {
@@ -338,7 +404,7 @@ func (st *Store) UpdateMission(id string, fn func(m *Mission)) (*Mission, error)
 	}
 	fn(m)
 	m.UpdatedAt = time.Now()
-	st.persist()
+	st.persistNow()
 	c := *m
 	return &c, nil
 }
@@ -364,7 +430,7 @@ func (st *Store) PutProposal(p *Proposal) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.s.Proposals[p.ID] = p
-	st.persist()
+	st.persistNow()
 }
 
 func (st *Store) GetProposal(id string) (*Proposal, error) {
@@ -386,7 +452,7 @@ func (st *Store) UpdateProposal(id string, fn func(p *Proposal)) (*Proposal, err
 		return nil, ErrNotFound
 	}
 	fn(p)
-	st.persist()
+	st.persistNow()
 	c := *p
 	return &c, nil
 }
@@ -413,7 +479,7 @@ func (st *Store) PutPayment(p *Payment) {
 	defer st.mu.Unlock()
 	p.UpdatedAt = time.Now()
 	st.s.Payments[p.ID] = p
-	st.persist()
+	st.persistNow()
 }
 
 func (st *Store) GetPayment(id string) (*Payment, error) {
@@ -436,7 +502,7 @@ func (st *Store) UpdatePayment(id string, fn func(p *Payment)) (*Payment, error)
 	}
 	fn(p)
 	p.UpdatedAt = time.Now()
-	st.persist()
+	st.persistNow()
 	c := *p
 	return &c, nil
 }

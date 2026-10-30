@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -237,6 +238,19 @@ func (r *REST) do(ctx context.Context, method, path string, body any, requestID 
 
 func money(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }
 
+// cutBytes shortens s to at most max bytes without splitting a UTF-8 rune
+// (PayPal limits are in bytes; summaries may contain accents or symbols).
+func cutBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // CreateOrder implements Client using POST /v2/checkout/orders with
 // intent=CAPTURE and the PayPal payment source so the buyer approves on
 // PayPal and is sent back to ReturnURL.
@@ -259,10 +273,7 @@ func (r *REST) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order,
 		if cat == "" {
 			cat = "PHYSICAL_GOODS"
 		}
-		name := it.Name
-		if len(name) > 127 {
-			name = name[:127]
-		}
+		name := cutBytes(it.Name, 127)
 		items = append(items, map[string]any{
 			"name":        name,
 			"sku":         it.SKU,
@@ -278,10 +289,7 @@ func (r *REST) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order,
 	} else {
 		items = nil // PayPal rejects item lists whose total does not match the breakdown
 	}
-	desc := req.Description
-	if len(desc) > 127 {
-		desc = desc[:127]
-	}
+	desc := cutBytes(req.Description, 127)
 	pu := map[string]any{"amount": amount, "description": desc}
 	if req.CustomID != "" {
 		pu["custom_id"] = req.CustomID

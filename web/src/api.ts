@@ -246,10 +246,15 @@ export const STATUS_LABEL: Record<string, string> = {
   VOIDED: 'Voided',
   EXPIRED: 'Expired',
   REFUNDED: 'Refunded',
+  PARTIALLY_REFUNDED: 'Partially refunded',
   REVERSED: 'Reversed',
   DENIED: 'Denied',
   refunded: 'Refunded',
 }
+
+/** Payment statuses that can never become payable again (mirrors store.IsFinalPayment). */
+export const FINAL_PAYMENT_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED', 'CANCELLED', 'VOIDED', 'EXPIRED', 'REFUNDED', 'REVERSED', 'DENIED']
+export const isFinalPayment = (s: string) => FINAL_PAYMENT_STATUSES.includes(s)
 
 export const label = (s: string) => STATUS_LABEL[s] ?? s.replace(/_/g, ' ')
 
@@ -266,6 +271,7 @@ export const statusTone = (s: string) => {
     case 'awaiting_payment':
     case 'PAYER_ACTION_REQUIRED':
     case 'CREATED':
+    case 'PARTIALLY_REFUNDED':
       return 'warn'
     case 'failed':
     case 'rejected_by_policy':

@@ -40,6 +40,12 @@ type Query struct {
 }
 
 // Searcher is implemented by every catalog backend.
+// CurrencyGetter is implemented by catalogs that can price a product in a
+// given currency; the agent uses it with the mandate's currency.
+type CurrencyGetter interface {
+	GetIn(ctx context.Context, id, currency string) (*Product, error)
+}
+
 type Searcher interface {
 	// Search returns products ranked by relevance for the query.
 	Search(ctx context.Context, q Query) ([]Product, error)

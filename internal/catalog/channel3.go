@@ -166,7 +166,17 @@ func (c *Channel3) Search(ctx context.Context, q Query) ([]Product, error) {
 
 // Get implements Searcher using GET /v1/products/{id}.
 func (c *Channel3) Get(ctx context.Context, id string) (*Product, error) {
-	path := "/v1/products/" + url.PathEscape(id) + "?country=" + url.QueryEscape(c.Country) + "&currency=" + url.QueryEscape(c.Currency)
+	return c.GetIn(ctx, id, c.Currency)
+}
+
+// GetIn fetches a product priced in the given currency (the mandate's), with
+// the same selection rules as Search, so the cart item is priced from the
+// offer the agent compared. It implements CurrencyGetter.
+func (c *Channel3) GetIn(ctx context.Context, id, currency string) (*Product, error) {
+	if currency == "" {
+		currency = c.Currency
+	}
+	path := "/v1/products/" + url.PathEscape(id) + "?country=" + url.QueryEscape(c.Country) + "&currency=" + url.QueryEscape(currency)
 	raw, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
@@ -175,9 +185,7 @@ func (c *Channel3) Get(ctx context.Context, id string) (*Product, error) {
 	if err := json.Unmarshal(raw, &cp); err != nil {
 		return nil, fmt.Errorf("channel3: decode product: %w", err)
 	}
-	// Same selection rules as Search (currency, in stock, new), so the cart
-	// item is priced from the offer the agent compared.
-	p, ok := c.normalise(cp, c.Currency)
+	p, ok := c.normalise(cp, currency)
 	if !ok {
 		return nil, ErrNotFound
 	}

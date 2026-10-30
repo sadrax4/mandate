@@ -20,7 +20,7 @@ Agentic commerce only works if people can delegate purchases without handing an 
 ## How it works
 
 1. **Create a mandate.** Budget, per-item cap, auto-approve threshold, allowed categories, blocked merchants, minimum rating. The policy engine (`internal/mandate`) is the only thing that decides whether a cart is acceptable.
-2. **Start a mission.** A goal in plain language. The agent (Claude via the official Go SDK, `internal/agent`) gets exactly four tools: `search_products`, `get_product`, `check_mandate`, `propose_cart`. It cannot call PayPal.
+2. **Start a mission.** A goal in plain language. The agent (Claude via the official Go SDK, `internal/agent`) gets exactly five tools: `search_products`, `get_product`, `check_mandate`, `propose_cart` and `suggest_mandate_change`. None of them can pay.
 3. **Watch it work.** Every search, check and decision streams to the UI over server-sent events. The products it considered are shown in an AG Grid, with the proposed ones highlighted.
 4. **Approve or reject.** A proposal shows each item, the agent's reason, the total, the remaining budget and which mandate checks passed. Reject with feedback ("too expensive, stay under $80") and the agent revises in the same conversation.
    When a goal cannot be met inside the mandate, the agent explains why and calls `suggest_mandate_change` with the smallest single change that would unblock it (raise the per-item cap to $329, allow the kitchen category, unblock a merchant). The agent cannot change its own mandate: the suggestion appears on the mission page and one click, **Amend mandate & retry**, applies it and retries the goal as a new mission.
@@ -45,11 +45,12 @@ Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.
 
 ## Judging in two minutes
 
-1. Open the live demo, click **New mandate** (or use *Create demo mandate*), give it a budget of 300 and a per-item cap of 150.
+1. Open the live demo, click **New mandate** (or use *Create demo mandate*), give it a budget of 300 and a per-item cap of 150, keep *Save my PayPal account* ticked.
 2. Start a mission such as *"a mechanical keyboard with brown switches under $120"* and watch the agent search Channel3, check the mandate and propose.
 3. **Approve & pay with PayPal**, log in with the sandbox buyer above, pay. Back in Mandate the capture ID appears and the **Ledger** shows the order. Because the mandate asked to save the account, the activity log now says *PayPal account saved on this mandate*.
 4. Start a second mission on the same mandate and approve it: it is paid with one click and no checkout. A cart under the auto-approve threshold is paid before the agent even finishes.
-5. Start another mission and **Reject with feedback** to see the agent revise.
+5. Start another mission and **Reject with feedback** to see the agent revise. Try a goal outside the mandate (a kettle under a computers-only mandate): the agent explains, suggests the smallest change, and **Amend mandate & retry** applies it.
+6. Open **Insights** for the charts, and on the **Ledger** ask the order assistant *"Did my most recent order get captured? Confirm it with PayPal."* to watch it read PayPal through the MCP server.
 
 The same flow runs locally with no keys at all (offline demo mode), see below.
 
@@ -129,10 +130,11 @@ Budget accounting is explicit: creating an order moves the amount into *reserved
 `internal/agent` runs a tool loop on the Claude Messages API (beta surface of the official `anthropic-sdk-go` v2):
 
 - Model `claude-opus-5-5` by default, `output_config.effort` configurable, system prompt cached with `cache_control`, and Anthropic's **server-side refusal fallback** enabled so a safety decline is re-served instead of failing the mission.
-- Four tools, each with a strict JSON schema. `search_products` and `get_product` read the catalog. `check_mandate` runs the policy engine and returns violations with product IDs so the agent can repair the cart. `propose_cart` runs the policy engine again, stores the proposal and, if the cart is under the auto-approve threshold, triggers PayPal order creation immediately.
+- Five tools, each with a strict JSON schema. `search_products` and `get_product` read the catalog. `check_mandate` runs the policy engine and returns violations with product IDs so the agent can repair the cart. `propose_cart` runs the policy engine again, stores the proposal and, if the cart is under the auto-approve threshold, triggers PayPal order creation immediately (paid at once when the mandate has a saved PayPal account). `suggest_mandate_change` records the smallest change that would unblock an impossible goal; only a human can apply it.
 - The system prompt tells the agent to search per item, verify requirements, prefer value over price, never propose without a passing `check_mandate`, and explain exactly what blocks a goal when the mandate cannot be met (so the human can adjust the mandate rather than guess).
 - Conversations are kept per mission, so *Reject with feedback* continues the same conversation with the human's note instead of starting over.
-- `LLM_PROVIDER=fake` is a deterministic scripted agent with the same tool interface. It searches, picks by relevance/rating/price, repairs budget violations by downgrading, and proposes. The test suite and the offline demo run on it, so the whole product is testable without network access.
+- `LLM_PROVIDER=fake` is a deterministic scripted agent with the same tool interface. It searches, picks by relevance/rating/price, repairs budget violations by downgrading, proposes, and suggests a mandate change when it has to give up. The test suite and the offline demo run on it, so the whole product is testable without network access.
+- The **order assistant** (`POST /api/ask`) is a second, separate session: the ledger as context plus PayPal's MCP server through the Anthropic MCP connector, with only read-only tools enabled.
 
 ## Mandate rules
 
@@ -203,9 +205,9 @@ docs/screenshots/       what the judges see
 go test ./...                 # policy engine, catalog, PayPal client (httptest), agent (fake provider), HTTP end-to-end
 ```
 
-The server tests run the full flow through real HTTP: create mandate → start mission → agent proposes → approve → simulated PayPal approval → return → capture → ledger and budget accounting, plus rejection/revision, auto-approval, cancellation and reconciliation.
+The server tests run the full flow through real HTTP: create mandate → start mission → agent proposes → approve → simulated PayPal approval → return → capture → ledger and budget accounting, plus rejection/revision, auto-approval, cancellation, reconciliation, webhooks, saved-account payments (first checkout saves, later carts pay with one click or none, dead tokens fall back to checkout), the suggest-and-amend loop, the insights aggregation and the MCP order assistant (with a scripted MCP server listing and provider).
 
-`scripts/smoke.cjs` drives the built UI in a headless browser (Playwright) and produced the screenshots in this README.
+`scripts/smoke.cjs` and `scripts/smoke-vault.cjs` drive the built UI in a headless browser (Playwright) and produced the demo-mode screenshots in this README.
 
 ## Deploy
 

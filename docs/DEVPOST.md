@@ -16,7 +16,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 ### What it does
 - You create a **mandate**: budget, per-item cap, auto-approve threshold, allowed categories, blocked merchants, minimum rating.
 - You give the agent a **mission** in plain language.
-- The agent (Claude, with four tools) searches a real product catalog, compares candidates, runs every cart through the policy engine, and **proposes**. It has no payment tool, so it cannot pay.
+- The agent (Claude, with five tools, none of which can pay) searches a real product catalog, compares candidates, runs every cart through the policy engine, and **proposes**. It has no payment tool, so it cannot pay.
 - You see its whole process live: searches, candidates in an AG Grid, mandate checks, the proposal with a reason per item and the alternatives it rejected.
 - **Approve** creates a PayPal order for the exact cart and sends you to PayPal checkout. On return the order is captured and the budget is updated. **Reject with feedback** and the agent revises in the same conversation.
 - When the goal cannot be met inside the mandate, the agent explains why and **suggests the smallest change** (a higher cap, an extra category, an unblocked merchant). It cannot change its own mandate; you click *Amend mandate & retry*.

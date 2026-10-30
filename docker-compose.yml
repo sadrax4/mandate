@@ -1,0 +1,42 @@
+# One-command deployment.
+#
+#   Without a domain (http://SERVER_IP:8080):
+#     cp .env.example .env && edit .env (set PUBLIC_URL=http://SERVER_IP:8080)
+#     docker compose up -d --build
+#
+#   With a domain and automatic HTTPS (Caddy obtains the certificate):
+#     set PUBLIC_URL=https://your.domain in .env and DOMAIN=your.domain in the shell
+#     DOMAIN=your.domain docker compose --profile https up -d --build
+services:
+  mandate:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=8080
+      - DATA_FILE=/app/data/mandate.json
+    volumes:
+      - mandate-data:/app/data
+    ports:
+      - "8080:8080"
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      - mandate
+    environment:
+      - DOMAIN=${DOMAIN:?set DOMAIN=your.domain}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  mandate-data:
+  caddy-data:
+  caddy-config:

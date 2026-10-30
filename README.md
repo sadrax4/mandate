@@ -185,6 +185,8 @@ The repo ships a multi-stage `Dockerfile` and a `render.yaml`. On [Render](https
 docker build -t mandate . && docker run --rm -p 8080:8080 --env-file .env mandate
 ```
 
+On your own server, `docker compose up -d --build` runs it with a persistent data volume, and `--profile https` adds Caddy with automatic certificates for a domain. See [deploy/README.md](deploy/README.md).
+
 ## Sponsor tools used
 
 - **PayPal**: Orders v2 (create, capture, get), OAuth2, sandbox checkout. Central to the product: it is the only way money moves.

@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy mandate:8080 {
+		# server-sent events must not be buffered
+		flush_interval -1
+	}
+}

@@ -9,7 +9,9 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (Oct
 **Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
 To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
 
-![Mission with a pending proposal](docs/screenshots/mission-proposal.png)
+![Live sandbox run: real Channel3 product, Claude reasoning, PayPal order captured](docs/screenshots/live-mission-paid.png)
+
+*A real run on the live demo: the agent searched Channel3, picked a Keychron keyboard from bestbuy.com, explained what it rejected and why, and the PayPal sandbox order was captured after human approval.*
 
 ## Why
 
@@ -32,8 +34,9 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 |---|---|
 | ![Dashboard](docs/screenshots/dashboard.png) Mandates with live budget bars and one-line missions | ![Paid](docs/screenshots/mission-paid.png) Captured payment with PayPal order and capture IDs |
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
+| ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after payment |
 
-Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)).
+Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)). The first four screenshots were taken in offline demo mode (note the `mock` badges); the last two on the live sandbox deployment.
 
 ## Judging in two minutes
 

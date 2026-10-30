@@ -143,6 +143,9 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 			}
 		}
 		if !repaired {
+			if field, value, reason := suggestFix(out, choices); field != "" {
+				_, _ = call("suggest_mandate_change", map[string]any{"field": field, "value": value, "reason": reason})
+			}
 			return fmt.Sprintf("The goal cannot be met within the mandate: %s. Consider raising the budget or the per-item cap.", summarise(out)), nil
 		}
 	}
@@ -272,4 +275,63 @@ func summarise(decisionJSON string) string {
 		msgs = append(msgs, v.Message)
 	}
 	return strings.Join(msgs, "; ")
+}
+
+// suggestFix derives the smallest mandate change from the first violation,
+// the way the real agent is asked to: the cheapest candidate's price for a
+// cap or budget problem, its category or merchant for a rule problem.
+func suggestFix(decisionJSON string, choices []choice) (field string, value any, reason string) {
+	var d struct {
+		Total      float64 `json:"total"`
+		Violations []struct {
+			Code      string `json:"code"`
+			ProductID string `json:"product_id"`
+			Message   string `json:"message"`
+		} `json:"violations"`
+	}
+	_ = json.Unmarshal([]byte(decisionJSON), &d)
+	find := func(id string) *fakeProduct {
+		for _, c := range choices {
+			for i := range c.products {
+				if c.products[i].ID == id {
+					return &c.products[i]
+				}
+			}
+		}
+		if len(choices) > 0 {
+			return &choices[0].products[choices[0].idx]
+		}
+		return nil
+	}
+	for _, v := range d.Violations {
+		p := find(v.ProductID)
+		switch v.Code {
+		case "over_budget":
+			cheapest := 0.0
+			for _, c := range choices {
+				cheapest += c.products[cheapestIndexExcluding(c.products, nil)].Price
+			}
+			if cheapest <= 0 {
+				cheapest = d.Total
+			}
+			return "total_budget", cheapest, fmt.Sprintf("the cheapest cart that meets the goal costs %.2f; %s", cheapest, v.Message)
+		case "item_over_cap":
+			if p != nil {
+				return "max_per_item", p.Price, fmt.Sprintf("the cheapest matching item costs %.2f; %s", p.Price, v.Message)
+			}
+		case "category_not_allowed":
+			if p != nil && p.Category != "" {
+				return "allowed_categories", []string{p.Category}, fmt.Sprintf("the goal needs a %s item; %s", p.Category, v.Message)
+			}
+		case "merchant_blocked":
+			if p != nil {
+				return "blocked_merchants", []string{p.Merchant}, fmt.Sprintf("the best match is only sold by %s; %s", p.Merchant, v.Message)
+			}
+		case "rating_too_low":
+			if p != nil {
+				return "min_rating", p.Rating, fmt.Sprintf("the best match is rated %.1f; %s", p.Rating, v.Message)
+			}
+		}
+	}
+	return "", nil, ""
 }

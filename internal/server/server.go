@@ -115,6 +115,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/missions", s.handleCreateMission)
 	m.HandleFunc("GET /api/missions/{id}", s.handleGetMission)
 	m.HandleFunc("GET /api/missions/{id}/events", s.handleEvents)
+	m.HandleFunc("POST /api/missions/{id}/apply-suggestion", s.handleApplySuggestion)
 
 	m.HandleFunc("POST /api/proposals/{id}/approve", s.handleApprove)
 	m.HandleFunc("POST /api/proposals/{id}/reject", s.handleReject)
@@ -252,6 +253,55 @@ func (s *Server) allowMissionStart() bool {
 	}
 	s.rateStarts = append(s.rateStarts, time.Now())
 	return true
+}
+
+// handleApplySuggestion lets a human accept the agent's suggested mandate
+// change and retries the goal as a new mission under the amended mandate.
+func (s *Server) handleApplySuggestion(w http.ResponseWriter, r *http.Request) {
+	ms, err := s.st.GetMission(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 404, "mission not found")
+		return
+	}
+	if ms.Suggestion == nil {
+		writeErr(w, 409, "the agent made no suggestion for this mission")
+		return
+	}
+	if ms.Suggestion.AppliedMissionID != "" {
+		writeErr(w, 409, "this suggestion was already applied")
+		return
+	}
+	s.payMu.Lock()
+	md, err := s.st.GetMandate(ms.MandateID)
+	if err != nil {
+		s.payMu.Unlock()
+		writeErr(w, 404, "mandate not found")
+		return
+	}
+	amended, desc, err := md.Amend(ms.Suggestion.Field, ms.Suggestion.Value)
+	if err != nil {
+		s.payMu.Unlock()
+		writeErr(w, 409, "cannot apply: "+err.Error())
+		return
+	}
+	if !s.allowMissionStart() {
+		s.payMu.Unlock()
+		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
+		return
+	}
+	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error {
+		m.TotalBudget, m.MaxPerItem, m.MinRating, m.AutoApproveUnder = amended.TotalBudget, amended.MaxPerItem, amended.MinRating, amended.AutoApproveUnder
+		m.AllowedCategories, m.BlockedMerchants = amended.AllowedCategories, amended.BlockedMerchants
+		return nil
+	})
+	s.payMu.Unlock()
+	retry := &store.Mission{ID: store.NewID("msn"), MandateID: ms.MandateID, Goal: ms.Goal, Status: store.MissionRunning, RetryOf: ms.ID, CreatedAt: time.Now()}
+	s.st.PutMission(retry)
+	_, _ = s.st.UpdateMission(ms.ID, func(m *store.Mission) { m.Suggestion.AppliedMissionID = retry.ID })
+	s.st.AddEvent(ms.ID, "status", "human amended the mandate ("+desc+") and retried the goal as mission "+retry.ID, map[string]any{"retry_mission_id": retry.ID, "change": desc})
+	s.st.AddEvent(retry.ID, "status", "retry of mission "+ms.ID+" after the human amended the mandate: "+desc, map[string]any{"retry_of": ms.ID, "change": desc})
+	go s.shopper.Run(context.Background(), retry.ID)
+	writeJSON(w, 201, map[string]any{"mission": retry, "change": desc})
 }
 
 func (s *Server) handleGetMission(w http.ResponseWriter, r *http.Request) {

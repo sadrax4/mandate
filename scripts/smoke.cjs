@@ -49,6 +49,20 @@ await page.waitForSelector('text=Earlier proposals', { timeout: 20000 })
 await page.waitForTimeout(800)
 await page.screenshot({ path: `${S}/06-mission-after-reject.png`, fullPage: true })
 
+// a goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries
+const tight = await (await page.request.post(base + '/api/mandates', { data: { name: 'Office only', currency: 'USD', total_budget: 300, max_per_item: 300, allowed_categories: ['computers', 'office'] } })).json()
+const ms2 = await (await page.request.post(base + '/api/missions', { data: { mandate_id: tight.id, goal: 'a gooseneck kettle for pour-over' } })).json()
+await page.goto(base + '/#/missions/' + ms2.id)
+await page.waitForSelector('text=The agent suggests:', { timeout: 20000 })
+await page.waitForTimeout(600)
+await page.screenshot({ path: `${S}/10-suggestion.png`, fullPage: true })
+await page.click('button:has-text("Amend mandate & retry")')
+await page.waitForURL((u) => u.hash.startsWith('#/missions/') && !u.hash.includes(ms2.id), { timeout: 10000 })
+await page.waitForSelector('text=Retry of', { timeout: 10000 })
+await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
+const amended = await (await page.request.get(base + '/api/mandates/' + tight.id)).json()
+if (!amended.mandate.allowed_categories.includes('kitchen')) throw new Error('mandate was not amended: ' + JSON.stringify(amended.mandate.allowed_categories))
+
 // spending insights: charts and the purchased-items grid
 await page.goto(base + '/#/insights')
 await page.waitForSelector('text=Spending insights')

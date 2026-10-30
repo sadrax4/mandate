@@ -44,17 +44,33 @@ const (
 
 // Mission is one goal the agent works on under a mandate.
 type Mission struct {
-	ID         string    `json:"id"`
-	MandateID  string    `json:"mandate_id"`
-	Goal       string    `json:"goal"`
-	Status     string    `json:"status"`
-	Summary    string    `json:"summary,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	ProposalID string    `json:"proposal_id,omitempty"`
-	OrderID    string    `json:"order_id,omitempty"`
-	Turns      int       `json:"turns"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string `json:"id"`
+	MandateID  string `json:"mandate_id"`
+	Goal       string `json:"goal"`
+	Status     string `json:"status"`
+	Summary    string `json:"summary,omitempty"`
+	Error      string `json:"error,omitempty"`
+	ProposalID string `json:"proposal_id,omitempty"`
+	OrderID    string `json:"order_id,omitempty"`
+	Turns      int    `json:"turns"`
+	// Suggestion is the smallest mandate change the agent believes would make
+	// the goal possible; it is only ever applied by a human.
+	Suggestion *Suggestion `json:"suggestion,omitempty"`
+	// RetryOf links a mission started by applying a suggestion to the
+	// mission that produced it.
+	RetryOf   string    `json:"retry_of,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Suggestion is a proposed change to one mandate field. For the numeric
+// fields Value is the new number; for allowed_categories it lists categories
+// to add; for blocked_merchants it lists merchants to unblock.
+type Suggestion struct {
+	Field            string `json:"field"`
+	Value            any    `json:"value"`
+	Reason           string `json:"reason"`
+	AppliedMissionID string `json:"applied_mission_id,omitempty"`
 }
 
 // Proposal is a cart the agent asked a human to approve.

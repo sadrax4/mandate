@@ -2,10 +2,31 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, RowClassRules } from 'ag-grid-community'
 import { api, label, money, type CartItem, type Config, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
-import { Card, Chip, Empty, Pill } from '../components/ui'
+import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
 
-const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'message']
+const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'message']
+const FIELD_LABEL: Record<string, string> = {
+  total_budget: 'total budget',
+  max_per_item: 'per-item cap',
+  min_rating: 'minimum rating',
+  auto_approve_under: 'auto-approve threshold',
+  allowed_categories: 'allowed categories',
+  blocked_merchants: 'blocked merchants',
+}
+function describeSuggestion(s: { field: string; value: any }, currency: string) {
+  const v = s.value
+  switch (s.field) {
+    case 'allowed_categories':
+      return `allow ${Array.isArray(v) ? v.join(', ') : v}`
+    case 'blocked_merchants':
+      return `unblock ${Array.isArray(v) ? v.join(', ') : v}`
+    case 'min_rating':
+      return `lower the minimum rating to ${v}`
+    default:
+      return `set the ${FIELD_LABEL[s.field] ?? s.field} to ${typeof v === 'number' ? money(v, currency) : v}`
+  }
+}
 const CHECK_LABEL: Record<string, string> = {
   within_budget: 'within budget',
   under_per_item_cap: 'under per-item cap',
@@ -15,7 +36,7 @@ const CHECK_LABEL: Record<string, string> = {
 }
 const ICON: Record<string, string> = {
   status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
-  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒',
+  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒', suggestion: '💡',
 }
 
 type Candidate = Product & { query: string }
@@ -161,6 +182,19 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
     }
   }
 
+  const applySuggestion = async () => {
+    if (!mission) return
+    setBusy('apply')
+    try {
+      const r = await api.applySuggestion(mission.id)
+      navigate(`#/missions/${r.mission.id}`)
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy('')
+    }
+  }
+
   const sync = async () => {
     if (!payment) return
     setBusy('sync')
@@ -226,7 +260,24 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
             <Card title="No proposal" className="mt-0">
               <p className="muted" style={{ marginTop: 0 }}>The agent decided the goal cannot be met inside this mandate.</p>
               {mission.summary && <div className="summary md"><Markdown text={mission.summary} /></div>}
+              {mission.suggestion && (
+                <div className="suggestion-box">
+                  <div>
+                    <b>💡 The agent suggests:</b> {describeSuggestion(mission.suggestion, mandate?.currency ?? 'USD')}
+                    <div className="muted" style={{ marginTop: 4 }}>{mission.suggestion.reason}</div>
+                    <div className="muted" style={{ marginTop: 4, fontSize: 12.5 }}>The agent cannot change its own mandate; only you can.</div>
+                  </div>
+                  {mission.suggestion.applied_mission_id ? (
+                    <a className="btn ghost" href={`#/missions/${mission.suggestion.applied_mission_id}`}>Applied · open the retry →</a>
+                  ) : (
+                    <button className="btn primary" onClick={applySuggestion} disabled={busy !== ''}>{busy === 'apply' ? 'Amending…' : 'Amend mandate & retry'}</button>
+                  )}
+                </div>
+              )}
             </Card>
+          )}
+          {mission.retry_of && (
+            <div className="muted" style={{ marginBottom: 10 }}>Retry of <a href={`#/missions/${mission.retry_of}`}>an earlier mission</a> after you amended the mandate.</div>
           )}
 
           {latest ? (

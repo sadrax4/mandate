@@ -102,7 +102,7 @@ How to work:
 2. Compare candidates on how well they meet every stated requirement, rating and review count, and price. Prefer the best value, not the most expensive option the budget allows.
 3. Before proposing, call check_mandate with the exact cart. If it reports violations, fix the cart (cheaper item, different merchant, drop an optional item) and check again.
 4. Call propose_cart exactly once with the final cart, one short factual reason per item and a one-paragraph summary. Quantity is 1 unless the goal says otherwise.
-5. If the goal cannot be met within the mandate, do not propose. Explain precisely what blocks it (for example "the only 4K USB-C monitors cost at least $329, above the $250 per-item cap") so the human can adjust the mandate.
+5. If the goal cannot be met within the mandate, do not propose. Explain precisely what blocks it (for example "the only 4K USB-C monitors cost at least $329, above the $250 per-item cap") and call suggest_mandate_change once with the smallest single change that would make it possible (for example max_per_item 329, or allowing the category). You cannot change the mandate yourself; the human decides.
 6. After propose_cart returns pending_approval, auto_approved or paid, stop calling tools and write a 2-4 sentence summary for the human: what you chose, why, the total, and what you considered and rejected. If the result says the cart was already paid with the saved PayPal account, say so plainly.
 
 Rules of the policy engine you should know: the minimum-rating rule only applies to products that have a rating; a product with no reviews passes it (say so in your reason and prefer rated alternatives when they exist). The per-item cap applies to the unit price; the budget applies to the cart total including quantities.
@@ -407,6 +407,42 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 					note = "under the auto-approve threshold: a PayPal order was created and the buyer completes checkout"
 				}
 				return mustJSON(map[string]any{"proposal_id": p.ID, "status": status, "payment": note, "decision": d}), nil
+			},
+		},
+		{
+			Name:        "suggest_mandate_change",
+			Description: "Use only when the goal cannot be met inside the mandate: record the smallest single change that would make it possible. field is one of total_budget, max_per_item, min_rating, auto_approve_under (value = the new number), allowed_categories (value = list of categories to add) or blocked_merchants (value = list of merchants to unblock). The mandate is NOT changed by this call; the human sees the suggestion and decides. Call it at most once per mission.",
+			Properties: map[string]any{
+				"field":  map[string]any{"type": "string", "enum": mandate.SuggestionFields},
+				"value":  map[string]any{"description": "the new number for numeric fields, or a list of names for the list fields"},
+				"reason": map[string]any{"type": "string", "description": "one sentence: what blocks the goal and why this change is the smallest fix"},
+			},
+			Required: []string{"field", "value", "reason"},
+			Run: func(ctx context.Context, input json.RawMessage) (string, error) {
+				var in struct {
+					Field  string `json:"field"`
+					Value  any    `json:"value"`
+					Reason string `json:"reason"`
+				}
+				if err := json.Unmarshal(input, &in); err != nil {
+					return "", fmt.Errorf("invalid input: %w", err)
+				}
+				m, err := s.Store.GetMission(missionID)
+				if err != nil {
+					return "", err
+				}
+				md, err := s.Store.GetMandate(m.MandateID)
+				if err != nil {
+					return "", err
+				}
+				_, desc, err := md.Amend(in.Field, in.Value)
+				if err != nil {
+					return "", fmt.Errorf("that change is not possible: %w", err)
+				}
+				sug := &store.Suggestion{Field: in.Field, Value: in.Value, Reason: strings.TrimSpace(in.Reason)}
+				_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) { m.Suggestion = sug })
+				s.Store.AddEvent(missionID, "suggestion", "agent suggests a mandate change: "+desc+" ("+sug.Reason+")", map[string]any{"field": in.Field, "value": in.Value, "description": desc})
+				return mustJSON(map[string]any{"ok": true, "change": desc, "note": "recorded for the human; the mandate is unchanged"}), nil
 			},
 		},
 	}

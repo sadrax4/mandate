@@ -91,6 +91,37 @@ func TestFakeAgentGivesUpWhenImpossible(t *testing.T) {
 	if len(st.ListProposals(id)) != 0 {
 		t.Fatal("should not have proposed")
 	}
+	if m.Suggestion == nil || m.Suggestion.Field != "total_budget" || m.Suggestion.Reason == "" {
+		t.Fatalf("expected a budget suggestion, got %+v", m.Suggestion)
+	}
+	if v, ok := m.Suggestion.Value.(float64); !ok || v <= 10 {
+		t.Fatalf("suggested budget should exceed the current 10: %v", m.Suggestion.Value)
+	}
+}
+
+func TestAmendMandate(t *testing.T) {
+	md := mandate.Mandate{Name: "x", Currency: "USD", TotalBudget: 100, MaxPerItem: 50, AllowedCategories: []string{"computers"}, BlockedMerchants: []string{"BudgetBytes"}, Spent: 30}
+	out, desc, err := md.Amend("max_per_item", 80.0)
+	if err != nil || out.MaxPerItem != 80 || desc == "" || md.MaxPerItem != 50 {
+		t.Fatalf("amend cap: %v %q %+v", err, desc, out)
+	}
+	if _, _, err := md.Amend("total_budget", 20.0); err == nil {
+		t.Fatal("budget below spent must be refused")
+	}
+	out, _, err = md.Amend("allowed_categories", []any{"kitchen", "computers"})
+	if err != nil || len(out.AllowedCategories) != 2 {
+		t.Fatalf("add category: %v %v", err, out.AllowedCategories)
+	}
+	out, _, err = md.Amend("blocked_merchants", "budgetbytes")
+	if err != nil || len(out.BlockedMerchants) != 0 {
+		t.Fatalf("unblock: %v %v", err, out.BlockedMerchants)
+	}
+	if _, _, err := md.Amend("min_rating", "4.5"); err != nil {
+		t.Fatalf("string number: %v", err)
+	}
+	if _, _, err := md.Amend("name", "x"); err == nil {
+		t.Fatal("unknown field must be refused")
+	}
 }
 
 func TestAutoApproveAndHook(t *testing.T) {

@@ -223,3 +223,5 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
 .toolbar input { flex: 1; min-width: 220px; }
 .cell-cat { display: inline-block; padding: 0 9px; border-radius: 999px; background: var(--surface-2); font-size: 12px; line-height: 22px; vertical-align: middle; }
 .cell-via-saved { color: var(--accent); font-weight: 600; }
+
+.suggestion-box { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 12px; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); flex-wrap: wrap; }

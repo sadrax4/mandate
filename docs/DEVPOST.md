@@ -19,6 +19,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 - The agent (Claude, with four tools) searches a real product catalog, compares candidates, runs every cart through the policy engine, and **proposes**. It has no payment tool, so it cannot pay.
 - You see its whole process live: searches, candidates in an AG Grid, mandate checks, the proposal with a reason per item and the alternatives it rejected.
 - **Approve** creates a PayPal order for the exact cart and sends you to PayPal checkout. On return the order is captured and the budget is updated. **Reject with feedback** and the agent revises in the same conversation.
+- When the goal cannot be met inside the mandate, the agent explains why and **suggests the smallest change** (a higher cap, an extra category, an unblocked merchant). It cannot change its own mandate; you click *Amend mandate & retry*.
 - **Save the account, pay with one click.** A mandate can ask PayPal to save your PayPal account at the first checkout (PayPal vault). After that, carts you approve are paid with one click, and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent.
 - A **ledger** lists every order with PayPal order and capture IDs, exportable to CSV, and an **Insights** page charts budget use per mandate, spend by category, merchant and day (AG Charts) over an AG Grid of every item bought.
 - **Ask about your orders.** An order assistant answers questions like "did my last order get captured?" or "any refunds or disputes?" from the ledger and from PayPal itself, through PayPal's hosted MCP server (the PayPal Agent Toolkit). Only PayPal's read-only tools are enabled for it: it can look, never pay.
@@ -38,7 +39,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 ### Accomplishments that we're proud of
 - A complete product, not a proof of concept: create → research → propose → approve → PayPal → ledger, with tests covering the whole chain.
 - It runs live against the PayPal sandbox, Claude Opus 5.5 and Channel3's real catalog; the README shows a real run with a captured sandbox order.
-- The agent explains *why* a goal cannot be met inside a mandate, so the human adjusts the mandate instead of guessing.
+- The agent explains *why* a goal cannot be met inside a mandate and proposes the smallest fix; the human applies it with one click. The policy stays human-owned, but the loop is fast.
 - Rejection with feedback continues the same conversation; the agent genuinely revises.
 - Two PayPal surfaces for the AI, with the money line drawn in code: the shopping agent proposes and the server pays through Orders v2 after approval; the order assistant reads PayPal through its MCP server with mutating tools disabled.
 - Agentic payments without giving the agent a wallet: the saved PayPal account turns a mandate into a real spending authority (one-click approvals, no-click auto-pay under the threshold), and the policy engine still bounds every charge.

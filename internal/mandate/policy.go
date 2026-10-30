@@ -10,6 +10,7 @@ package mandate
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -47,6 +48,119 @@ type Mandate struct {
 // HasSavedPayment reports whether a saved PayPal account can pay for carts
 // under this mandate without a checkout hop.
 func (m Mandate) HasSavedPayment() bool { return m.VaultID != "" }
+
+// SuggestionFields are the mandate fields an agent may ask a human to change.
+var SuggestionFields = []string{"total_budget", "max_per_item", "min_rating", "auto_approve_under", "allowed_categories", "blocked_merchants"}
+
+// Amend returns a copy of the mandate with one suggested change applied:
+// a new number for the numeric fields, categories added for
+// allowed_categories, merchants removed for blocked_merchants. It returns a
+// human-readable description of the change, or an error when the change is
+// meaningless or the result would not be a valid mandate.
+func (m Mandate) Amend(field string, value any) (Mandate, string, error) {
+	out := m
+	out.AllowedCategories = append([]string(nil), m.AllowedCategories...)
+	out.BlockedMerchants = append([]string(nil), m.BlockedMerchants...)
+	num := func() (float64, error) {
+		switch v := value.(type) {
+		case float64:
+			return v, nil
+		case int:
+			return float64(v), nil
+		case string:
+			return strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(v, "$")), 64)
+		}
+		return 0, fmt.Errorf("%s needs a number", field)
+	}
+	list := func() ([]string, error) {
+		switch v := value.(type) {
+		case string:
+			return []string{strings.ToLower(strings.TrimSpace(v))}, nil
+		case []string:
+			return v, nil
+		case []any:
+			var xs []string
+			for _, x := range v {
+				if s, ok := x.(string); ok && strings.TrimSpace(s) != "" {
+					xs = append(xs, strings.ToLower(strings.TrimSpace(s)))
+				}
+			}
+			return xs, nil
+		}
+		return nil, fmt.Errorf("%s needs a list of names", field)
+	}
+	var desc string
+	switch field {
+	case "total_budget", "max_per_item", "min_rating", "auto_approve_under":
+		v, err := num()
+		if err != nil {
+			return m, "", err
+		}
+		v = Round(v)
+		cur := map[string]*float64{"total_budget": &out.TotalBudget, "max_per_item": &out.MaxPerItem, "min_rating": &out.MinRating, "auto_approve_under": &out.AutoApproveUnder}[field]
+		if *cur == v {
+			return m, "", fmt.Errorf("%s is already %.2f", field, v)
+		}
+		if field == "total_budget" && v < m.Spent+m.Reserved {
+			return m, "", fmt.Errorf("total_budget cannot go below what is already spent or reserved (%.2f)", m.Spent+m.Reserved)
+		}
+		desc = fmt.Sprintf("%s %.2f → %.2f", field, *cur, v)
+		*cur = v
+	case "allowed_categories":
+		xs, err := list()
+		if err != nil || len(xs) == 0 {
+			return m, "", fmt.Errorf("allowed_categories needs at least one category")
+		}
+		if len(out.AllowedCategories) == 0 {
+			return m, "", fmt.Errorf("every category is already allowed")
+		}
+		var added []string
+		for _, x := range xs {
+			if !contains(out.AllowedCategories, x) {
+				out.AllowedCategories = append(out.AllowedCategories, x)
+				added = append(added, x)
+			}
+		}
+		if len(added) == 0 {
+			return m, "", fmt.Errorf("those categories are already allowed")
+		}
+		desc = "allow " + strings.Join(added, ", ")
+	case "blocked_merchants":
+		xs, err := list()
+		if err != nil || len(xs) == 0 {
+			return m, "", fmt.Errorf("blocked_merchants needs at least one merchant")
+		}
+		var removed []string
+		var keep []string
+		for _, b := range out.BlockedMerchants {
+			if contains(xs, strings.ToLower(b)) {
+				removed = append(removed, b)
+			} else {
+				keep = append(keep, b)
+			}
+		}
+		if len(removed) == 0 {
+			return m, "", fmt.Errorf("those merchants are not blocked")
+		}
+		out.BlockedMerchants = keep
+		desc = "unblock " + strings.Join(removed, ", ")
+	default:
+		return m, "", fmt.Errorf("unknown field %q", field)
+	}
+	if err := out.Validate(); err != nil {
+		return m, "", err
+	}
+	return out, desc, nil
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if strings.EqualFold(v, x) {
+			return true
+		}
+	}
+	return false
+}
 
 // Remaining is the budget still available for new proposals.
 func (m Mandate) Remaining() float64 {

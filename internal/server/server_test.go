@@ -742,3 +742,36 @@ func TestInsightsAggregateCapturedSpend(t *testing.T) {
 		t.Fatalf("mandate row = %v", md)
 	}
 }
+
+func TestApplySuggestionAmendsMandateAndRetries(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Tight", "total_budget": 300, "max_per_item": 300, "allowed_categories": []string{"computers"}}, &md)
+	mdID := md["id"].(string)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionNoProposal)
+	m := out["mission"].(map[string]any)
+	sug, _ := m["suggestion"].(map[string]any)
+	if sug == nil || sug["field"] != "allowed_categories" {
+		t.Fatalf("expected a category suggestion, got %v", m["suggestion"])
+	}
+	var applied map[string]any
+	if code := e.post("/api/missions/"+ms["id"].(string)+"/apply-suggestion", nil, &applied); code != 201 {
+		t.Fatalf("apply: %d %v", code, applied)
+	}
+	retryID := applied["mission"].(map[string]any)["id"].(string)
+	var mdv map[string]any
+	e.get("/api/mandates/"+mdID, &mdv)
+	cats := mdv["mandate"].(map[string]any)["allowed_categories"].([]any)
+	if len(cats) != 2 || cats[1] != "kitchen" {
+		t.Fatalf("mandate not amended: %v", cats)
+	}
+	out = e.waitMission(retryID, store.MissionAwaitingApproval)
+	if out["mission"].(map[string]any)["retry_of"] != ms["id"] {
+		t.Fatalf("retry link missing: %v", out["mission"])
+	}
+	if code := e.post("/api/missions/"+ms["id"].(string)+"/apply-suggestion", nil, &applied); code != 409 {
+		t.Fatalf("second apply should be refused, got %d", code)
+	}
+}

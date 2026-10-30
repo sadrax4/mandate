@@ -28,6 +28,8 @@ export type Mission = {
   proposal_id?: string
   order_id?: string
   turns: number
+  suggestion?: { field: string; value: any; reason: string; applied_mission_id?: string }
+  retry_of?: string
   created_at: string
   updated_at: string
 }
@@ -193,6 +195,8 @@ export const api = {
   createMission: (mandate_id: string, goal: string) =>
     req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id, goal }) }),
   insights: () => req<Insights>('/api/insights'),
+  applySuggestion: (missionId: string) =>
+    req<{ mission: Mission; change: string }>(`/api/missions/${missionId}/apply-suggestion`, { method: 'POST' }),
   ask: (question: string, mandateId?: string) =>
     req<AskResult>('/api/ask', { method: 'POST', body: JSON.stringify({ question, mandate_id: mandateId || '' }) }),
   approve: (proposalId: string) =>

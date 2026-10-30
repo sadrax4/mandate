@@ -80,8 +80,34 @@ func TestOpenMigratesLegacyReservations(t *testing.T) {
 	// entity writes are on disk immediately
 	st.PutPayment(&Payment{ID: "D", Status: "CREATED", Amount: 1, Currency: "USD", Reserved: true})
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 2`) {
+	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 3`) {
 		t.Fatalf("synchronous persistence missing: %s", data)
 	}
 	st.Close()
+}
+
+func TestMigrationMarksThePreexistingDemoMandate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.json")
+	old := `{"version":2,"mandates":{"mnd_b":{"id":"mnd_b","name":"Desk refresh","currency":"USD","total_budget":300,"created_at":"2026-02-01T00:00:00Z"},"mnd_a":{"id":"mnd_a","name":"Desk refresh","currency":"USD","total_budget":300,"created_at":"2026-01-01T00:00:00Z"},"mnd_c":{"id":"mnd_c","name":"Mine","currency":"USD","total_budget":50,"created_at":"2026-03-01T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	demos := 0
+	for _, m := range st.ListMandates() {
+		if m.Demo {
+			demos++
+			if m.ID != "mnd_a" {
+				t.Fatalf("the oldest Desk refresh is the demo, got %s", m.ID)
+			}
+		}
+	}
+	if demos != 1 {
+		t.Fatalf("demo mandates: %d", demos)
+	}
 }

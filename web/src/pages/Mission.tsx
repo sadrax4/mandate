@@ -246,7 +246,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const visibleEvents = events.filter((ev) => (ev.type !== 'tool_result' && ev.type !== 'mcp_tool_result') || ev.data?.error)
 
   const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status) && !isCaptured(payment.status)
-  const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'
+  const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && !running
   const remaining = mandate ? mandate.total_budget - mandate.spent - mandate.reserved : 0
 
   return (
@@ -280,7 +280,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
       {loadErr && <div className="alert bad">Could not refresh this mission: {loadErr}</div>}
 
       <div className="two-col">
-        <Card title="Agent activity" action={mission.status === 'running' ? <Pill status="running">working…</Pill> : <span className="muted">{visibleEvents.length} {visibleEvents.length === 1 ? 'event' : 'events'}</span>}>
+        <Card title="Agent activity" action={running ? <Pill status="running">working…</Pill> : <span className="muted">{visibleEvents.length} {visibleEvents.length === 1 ? 'event' : 'events'}</span>}>
           <div className="timeline" ref={timelineRef}>
             {visibleEvents.length === 0 && <Empty>Waiting for the agent…</Empty>}
             {visibleEvents.map((ev) => (
@@ -291,7 +291,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
         <div>
           {mission.status === 'failed' && <div className="alert bad">The agent failed: {mission.error}</div>}
-          {mission.negotiation && <NegotiationCard negotiation={mission.negotiation} currency={mandate?.currency ?? 'USD'} running={mission.status === 'running'} />}
+          {mission.negotiation && <NegotiationCard negotiation={mission.negotiation} currency={mandate?.currency ?? 'USD'} running={running} />}
           {mission.status === 'no_proposal' && (
             <Card title="No proposal" className="mt-0">
               <p className="muted" style={{ marginTop: 0 }}>The agent decided the goal cannot be met inside this mandate.</p>
@@ -330,7 +330,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
           {latest ? (
             <Card title={`Proposal ${proposals.length > 1 ? `#${proposals.length}` : ''}`} action={<Pill status={latest.status} />}>
-              <Grid<CartItem> rowData={latest.cart.items} columnDefs={itemCols} getRowId={(p) => p.data.product_id} />
+              <Grid<CartItem> rowData={latest.cart.items} columnDefs={itemCols} getRowId={(p) => p.data.product_id} compact />
               {latest.cart.items.some((i) => i.reason) && (
                 <ul className="reasons">
                   {latest.cart.items.map((i, idx) => (
@@ -394,7 +394,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
               )}
             </Card>
           ) : (
-            mission.status === 'running' && (
+            running && (
               <Card title="Proposal">
                 <Empty>The agent is still researching. A proposal will appear here for your approval.</Empty>
               </Card>

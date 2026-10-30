@@ -103,6 +103,7 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 		cfg.Currency = "USD"
 	}
 	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
+	cfg.Currency = strings.ToUpper(strings.TrimSpace(cfg.Currency))
 	s := &Server{cfg: cfg, st: st, pp: pp, shopper: shopper, catalog: cat, mux: http.NewServeMux(), inflight: map[string]inflightOrder{}, stop: make(chan struct{})}
 	s.recomputeAllReserved() // reservations are derived from payment rows
 	if m, ok := pp.(*paypal.Mock); ok {

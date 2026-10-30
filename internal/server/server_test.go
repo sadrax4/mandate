@@ -1815,24 +1815,54 @@ func TestRejectWithdrawsTheLiveOrderOfAPendingProposal(t *testing.T) {
 
 func TestDemoMandateIsCreatedOnce(t *testing.T) {
 	e := newEnv(t)
-	var a, b map[string]any
-	if code := e.post("/api/mandates/demo", nil, &a); code != 201 || a["created"] != true {
-		t.Fatalf("first: %d %v", code, a)
+	// five clicks at once: one creates, the rest get the same mandate back
+	type res struct {
+		code int
+		id   string
 	}
-	if code := e.post("/api/mandates/demo", nil, &b); code != 200 || b["created"] != false {
-		t.Fatalf("second: %d %v", code, b)
+	results := make(chan res, 5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			var out map[string]any
+			code := e.post("/api/mandates/demo", nil, &out)
+			id, _ := out["mandate"].(map[string]any)["id"].(string)
+			results <- res{code, id}
+		}()
 	}
-	if a["mandate"].(map[string]any)["id"] != b["mandate"].(map[string]any)["id"] {
-		t.Fatal("a second click created another demo mandate")
+	created, ids := 0, map[string]bool{}
+	for i := 0; i < 5; i++ {
+		r := <-results
+		switch r.code {
+		case 201:
+			created++
+		case 200:
+		default:
+			t.Fatalf("demo: %d", r.code)
+		}
+		ids[r.id] = true
+	}
+	if created != 1 || len(ids) != 1 {
+		t.Fatalf("created %d demo mandates with ids %v", created, ids)
 	}
 	var md map[string]any
-	e.post("/api/mandates", map[string]any{"name": "Mine", "total_budget": 100, "demo": true}, &md)
-	if md["demo"] == true {
-		t.Fatal("the demo flag must not be settable through the API")
+	if code := e.post("/api/mandates", map[string]any{"name": "Mine", "total_budget": 100, "demo": true}, &md); code != 201 || md["demo"] == true {
+		t.Fatalf("the demo flag must not be settable through the API: %d %v", code, md)
+	}
+	var got map[string]any
+	e.get("/api/mandates/"+md["id"].(string), &got)
+	if got["mandate"].(map[string]any)["demo"] == true {
+		t.Fatal("flag persisted")
 	}
 	var all []map[string]any
 	e.get("/api/mandates", &all)
 	if len(all) != 2 {
 		t.Fatalf("mandates: %d", len(all))
+	}
+	// a second server over the same file keeps the one demo mandate
+	cat := catalog.NewMock()
+	srv2 := New(Config{PublicURL: e.ts.URL, StaticDir: "/nonexistent", Currency: "usd"}, e.st, e.pp, agent.NewShopper(agent.Fake{}, cat, e.st), cat)
+	t.Cleanup(srv2.Close)
+	if srv2.cfg.Currency != "USD" {
+		t.Fatalf("currency not normalised: %q", srv2.cfg.Currency)
 	}
 }

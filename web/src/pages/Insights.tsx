@@ -105,7 +105,7 @@ export default function InsightsPage() {
           { field: 'mandate', headerName: 'Mandate', minWidth: 130, filter: 'agTextColumnFilter', floatingFilter: true },
           { field: 'goal', headerName: 'Mission goal', minWidth: 220, flex: 2, tooltipField: 'goal' },
           { field: 'order_id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'order_id' },
-          { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
+          { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id', hide: true }, // in the CSV export
           { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
         ],
       },

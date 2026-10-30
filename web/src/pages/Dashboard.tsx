@@ -16,7 +16,6 @@ export default function Dashboard() {
   const [missions, setMissions] = useState<Mission[]>([])
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
-  const [note, setNote] = useState('')
   const [busy, setBusy] = useState('')
   const config = useConfig()
   const [showAll, setShowAll] = useState(false)
@@ -55,15 +54,29 @@ export default function Dashboard() {
   const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
   const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
+  // Reveal a mandate card: expand the list if it is hidden, scroll to it, flash it.
+  const reveal = (id: string) => {
+    setShowAll(true)
+    setTimeout(() => {
+      const el = document.getElementById('mandate-' + id)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      el?.classList.add('flash')
+      setTimeout(() => el?.classList.remove('flash'), 1800)
+    }, 50)
+  }
+  const demo = mandates.find((m) => m.demo)
   // The server creates the demo mandate once and returns it on later clicks.
   const createDemo = async () => {
+    if (demo) {
+      reveal(demo.id)
+      return
+    }
     setBusy('demo')
     setActionError('')
-    setNote('')
     try {
       const r = await api.demoMandate()
       await load()
-      if (!r.created) setNote(`The demo mandate "${r.mandate.name}" already exists; it is in the list below.`)
+      if (!r.created) reveal(r.mandate.id)
     } catch (e: any) {
       setActionError(e.message)
     } finally {
@@ -80,13 +93,12 @@ export default function Dashboard() {
         </div>
         <div className="actions">
           <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
-            {busy === 'demo' ? 'Creating…' : mandates.some((m) => m.demo) ? 'Open demo mandate' : 'Create demo mandate'}
+            {busy === 'demo' ? 'Creating…' : demo ? 'Show demo mandate' : 'Create demo mandate'}
           </button>
           <a className="btn primary" href="#/mandates/new">New mandate</a>
         </div>
       </div>
       {actionError && <div className="alert bad">{actionError}</div>}
-      {note && <div className="alert warn">{note}</div>}
       {loadError && <div className="alert bad">Could not load the dashboard: {loadError}</div>}
 
       {!guideHidden && (
@@ -247,7 +259,7 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
   }
   const active = missions.filter((x) => x.status === 'running' || x.status === 'awaiting_approval' || x.status === 'awaiting_payment').length
   return (
-    <Card title={m.name} action={<span className="muted">{missions.length} mission{missions.length === 1 ? '' : 's'}{active ? ` · ${active} active` : ''}</span>}>
+    <Card id={'mandate-' + m.id} className="mandate-card" title={m.name} action={<span className="muted">{missions.length} mission{missions.length === 1 ? '' : 's'}{active ? ` · ${active} active` : ''}</span>}>
       <BudgetBar total={m.total_budget} spent={m.spent} reserved={m.reserved} currency={m.currency} />
       <div className="chips">
         {m.max_per_item > 0 && <Chip>≤ {money(m.max_per_item, m.currency)} per item</Chip>}

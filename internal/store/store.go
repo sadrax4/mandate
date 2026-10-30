@@ -251,7 +251,7 @@ type state struct {
 }
 
 // currentVersion is bumped when a one-time migration is added to Open.
-const currentVersion = 2
+const currentVersion = 3
 
 // Store is safe for concurrent use. Entity writes (mandates, missions,
 // proposals, payments) are written to the JSON file synchronously, so a
@@ -332,6 +332,23 @@ func Open(path string) (*Store, error) {
 			case PaymentCompleted, PaymentDenied:
 				p.Accounted = settled
 			}
+		}
+	}
+	if st.s.Version < 3 {
+		// Files written before the Demo flag: the oldest "Desk refresh"
+		// mandate is the one the dashboard button created.
+		var demo *mandate.Mandate
+		for _, m := range st.s.Mandates {
+			if m.Demo {
+				demo = nil
+				break
+			}
+			if m.Name == "Desk refresh" && (demo == nil || m.CreatedAt.Before(demo.CreatedAt)) {
+				demo = m
+			}
+		}
+		if demo != nil {
+			demo.Demo = true
 		}
 	}
 	st.s.Version = currentVersion

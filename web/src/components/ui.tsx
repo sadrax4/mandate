@@ -10,9 +10,9 @@ export function Pill({ status, children }: { status: string; children?: ReactNod
   )
 }
 
-export function Card({ title, action, children, className = '' }: { title?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
+export function Card({ title, action, children, className = '', id }: { title?: ReactNode; action?: ReactNode; children: ReactNode; className?: string; id?: string }) {
   return (
-    <section className={`card ${className}`}>
+    <section className={`card ${className}`} id={id}>
       {(title || action) && (
         <header className="card-head">
           <h3>{title}</h3>

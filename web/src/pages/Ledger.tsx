@@ -57,6 +57,9 @@ export default function Ledger() {
   }, [rows])
 
   const [details, setDetails] = useState(false) // payer and environment columns
+  useEffect(() => {
+    gridApi.current?.setColumnsVisible(['payer_email', 'mode'], details)
+  }, [details])
   const cols = useMemo<ColDef<LedgerRow>[]>(
     () => [
       { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
@@ -68,10 +71,10 @@ export default function Ledger() {
       { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 110 },
       { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id' },
       { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
-      { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: !details },
-      { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: !details },
+      { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: true },
+      { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: true },
     ],
-    [details],
+    [],
   )
 
   return (

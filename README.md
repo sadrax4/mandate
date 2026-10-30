@@ -26,6 +26,7 @@ Agentic commerce only works if people can delegate purchases without handing an 
 5. **Pay with PayPal.** Approval creates a PayPal order (Orders v2, `intent=CAPTURE`) for the exact cart, reserves the budget, and sends the buyer to PayPal checkout. On return the order is captured and the mandate's spent total is updated. Cancelling at PayPal releases the reservation.
 6. **Save the account, pay with one click.** A mandate can ask PayPal to save the buyer's PayPal account at the first checkout (PayPal vault). From then on, carts you approve are paid with one click and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent. The agent still has no payment tool.
 7. **Audit.** The ledger lists every order with mission, mandate, amount, status, PayPal order ID, capture ID, payer and whether it went through checkout or the saved account, sortable and filterable.
+8. **Ask about your orders.** An order assistant on the ledger page answers questions ("did my last order get captured?", "what did I spend this week?", "any refunds or disputes?") from the ledger and from PayPal itself, through **PayPal's hosted MCP server** (the PayPal Agent Toolkit) connected with the Anthropic MCP connector. Only PayPal's read-only tools are enabled for it; it can look, never pay.
 
 Two independent gates protect the money: the policy engine (re-run at approval time, because the budget may have moved) and the buyer's own PayPal consent, given at checkout for every order, or once at the first checkout when the account is saved. Carts under the auto-approve threshold skip the first gate but never the second.
 
@@ -83,6 +84,8 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `PAYPAL_MODE` | `sandbox` if a client ID is set, else `mock` | `sandbox`, `live` or `mock` (built-in checkout simulator) |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | | REST app credentials |
 | `PAYPAL_WEBHOOK_ID` | | Optional webhook ID; enables signature verification for `/paypal/webhook` |
+| `PAYPAL_MCP` | `auto` | Order assistant on PayPal's MCP server: `auto` (on when PayPal credentials and the Anthropic provider are configured), `on`, `off` |
+| `PAYPAL_MCP_URL` | PayPal's SSE endpoint for the environment | Override the MCP endpoint handed to the Anthropic MCP connector (e.g. `https://mcp.sandbox.paypal.com/http`) |
 | `LLM_PROVIDER` | `anthropic` if a key is set, else `fake` | `anthropic` or `fake` (scripted agent for tests and demos) |
 | `ANTHROPIC_API_KEY` | | Claude API key from the Anthropic Console |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | | Optional: an Anthropic-compatible gateway and bearer token, e.g. `https://openrouter.ai/api` with an OpenRouter key and `ANTHROPIC_MODEL=anthropic/claude-opus-5.5`. Anthropic-only extras (refusal fallback, effort) are skipped automatically |
@@ -111,6 +114,7 @@ All PayPal code lives in `internal/paypal` and uses the REST API directly from G
 - **Reconciliation** (`GET /v2/checkout/orders/{id}`) behind *Check status with PayPal*: if the buyer approved but the redirect never arrived, the order is captured; if PayPal already shows it completed, the ledger is updated.
 - **Webhooks** (`POST /paypal/webhook`): every delivery is verified with `POST /v1/notifications/verify-webhook-signature` before it is trusted. `CHECKOUT.ORDER.APPROVED` captures the order even if the buyer closed the tab; `PAYMENT.CAPTURE.COMPLETED` reconciles the ledger; denied/refunded/reversed captures update the payment status. Handling is idempotent, so PayPal retries never double-count a spend. Configure a webhook for `<PUBLIC_URL>/paypal/webhook` in the Developer Dashboard and set `PAYPAL_WEBHOOK_ID`.
 - **Cancel** (`/paypal/cancel`) releases the budget reservation.
+- **PayPal MCP server (Agent Toolkit).** The order assistant talks to `https://mcp.sandbox.paypal.com` (or `mcp.paypal.com` in live) through the Anthropic MCP connector: the Messages API calls PayPal's MCP tools on the model's behalf, authenticated with the same OAuth2 client-credentials token Mandate already mints. At startup Mandate performs the MCP handshake itself (`initialize`, `tools/list` over Streamable HTTP) to check the credentials and discover the tool catalogue, then enables only the read-only tools (`get_order`, `list_transactions`, `get_shipment_tracking`, `get_refund`, `list_disputes`, `get_invoice`, ...) through an `mcp_toolset` with everything else disabled. `create_*`, `pay_*`, `create_refund`, `accept_dispute_claim` and friends are never offered to the model, so even this assistant cannot move money. If the handshake fails the assistant simply stays off and `/api/config` says why.
 - **Saved payment methods (vault).** When a mandate asks for it, the first order carries `payment_source.paypal.attributes.vault` (`store_in_vault: ON_SUCCESS`, `usage_type: MERCHANT`); the buyer consents at checkout and the capture response returns the vault token (`payment_source.paypal.attributes.vault.id`, status `VAULTED`), which is stored on the mandate. Later orders are created with `payment_source.paypal.vault_id` and captured server-side straight away: approved carts pay with one click, carts under the auto-approve threshold pay with none. A token that stops working (revoked by the buyer, vault disabled on the app) is forgotten and the flow falls back to a normal checkout, which saves a fresh one.
 
 Budget accounting is explicit: creating an order moves the amount into *reserved*; a capture moves it to *spent*; a cancel releases it. The mandate re-evaluates the cart at approval time, so a proposal that was fine an hour ago cannot be paid if other missions have used the budget since.
@@ -210,7 +214,7 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 
 ## Sponsor tools used
 
-- **PayPal**: Orders v2 (create, capture, get), saved payment methods (vault), verified webhooks, OAuth2, sandbox checkout. Central to the product: it is the only way money moves.
+- **PayPal**: Orders v2 (create, capture, get), saved payment methods (vault), verified webhooks, OAuth2, sandbox checkout, and the hosted PayPal MCP server (Agent Toolkit) for the read-only order assistant. Central to the product: it is the only way money moves.
 - **AG Grid** (Community): the products-considered grid, the proposal item grid and the ledger (sorting, filtering, pagination, CSV export, themed for light and dark mode via the Theming API).
 - **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`): `POST /v1/search` with price, availability and condition filters and locale config, `GET /v1/products/{id}` for details. Each product is normalised to its cheapest in-stock offer (merchant domain, buy URL, price), with brand, cross-merchant ratings, category path, structured attributes and key features passed through to the agent.
 - **Render**: `render.yaml` and Docker image for one-click deployment.
@@ -229,7 +233,7 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 
 - Recurring mandates (a monthly budget the agent keeps spending against) and shared mandates for teams.
 - Multi-currency mandates and Pay Later options at checkout.
-- PayPal Agent Toolkit / MCP server as a second tool surface for invoices and disputes.
+- Let the order assistant draft (never send) PayPal invoices and dispute responses for a human to approve, using the MCP tools that are disabled today.
 
 ## Built with AI
 

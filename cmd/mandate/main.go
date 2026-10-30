@@ -124,7 +124,7 @@ func main() {
 		log.Printf("MAX_MISSIONS_PER_HOUR=%q is not a number: using 40", os.Getenv("MAX_MISSIONS_PER_HOUR"))
 		maxRuns = 40
 	}
-	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns, DemoBuyerHint: os.Getenv("DEMO_BUYER_HINT")}, st, pp, shopper, cat)
+	srv := server.New(server.Config{PublicURL: publicURL, StaticDir: env("STATIC_DIR", "web/dist"), Currency: env("CURRENCY", "USD"), Version: version, WebhookID: os.Getenv("PAYPAL_WEBHOOK_ID"), MaxMissionsPerHour: maxRuns, DemoBuyerHint: os.Getenv("DEMO_BUYER_HINT"), PayPalMCP: env("PAYPAL_MCP", "auto"), PayPalMCPURL: os.Getenv("PAYPAL_MCP_URL")}, st, pp, shopper, cat)
 
 	httpSrv := &http.Server{Addr: ":" + port, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

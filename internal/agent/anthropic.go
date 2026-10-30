@@ -76,10 +76,32 @@ func (a *Anthropic) NewSession(system string) Session {
 	return &anthropicSession{a: a, system: system}
 }
 
+// NewMCPSession implements MCPCapable: the session carries the MCP server
+// definition and the allowlisted toolset on every request.
+func (a *Anthropic) NewMCPSession(system string, mcp MCPServer) Session {
+	m := mcp
+	return &anthropicSession{a: a, system: system, mcp: &m}
+}
+
 type anthropicSession struct {
 	a       *Anthropic
 	system  string
+	mcp     *MCPServer
 	history []anthropic.BetaMessageParam
+}
+
+// mcpToolset builds the mcp_toolset entry: everything disabled by default,
+// only the allowlisted tools enabled.
+func mcpToolset(m *MCPServer) anthropic.BetaToolUnionParam {
+	cfg := make(map[string]anthropic.BetaMCPToolConfigParam, len(m.AllowedTools))
+	for _, name := range m.AllowedTools {
+		cfg[name] = anthropic.BetaMCPToolConfigParam{Enabled: anthropic.Bool(true)}
+	}
+	return anthropic.BetaToolUnionParam{OfMCPToolset: &anthropic.BetaMCPToolsetParam{
+		MCPServerName: m.Name,
+		DefaultConfig: anthropic.BetaMCPToolDefaultConfigParam{Enabled: anthropic.Bool(false)},
+		Configs:       cfg,
+	}}
 }
 
 func (s *anthropicSession) Send(ctx context.Context, userText string, tools []Tool, emit func(Event)) (string, error) {
@@ -93,6 +115,9 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 			Description: anthropic.String(t.Description),
 			InputSchema: anthropic.BetaToolInputSchemaParam{Properties: t.Properties, Required: t.Required},
 		}})
+	}
+	if s.mcp != nil && len(s.mcp.AllowedTools) > 0 && !s.a.Compat {
+		betaTools = append(betaTools, mcpToolset(s.mcp))
 	}
 	var finalText strings.Builder
 	for turn := 0; turn < s.a.MaxTurns; turn++ {
@@ -110,6 +135,19 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 			params.Fallbacks = anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()}
 			if s.a.Effort != "" {
 				params.OutputConfig = anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(s.a.Effort)}
+			}
+			if s.mcp != nil && len(s.mcp.AllowedTools) > 0 {
+				// MCP connector: the API calls the remote server for the model.
+				tok, err := s.mcp.Token(ctx)
+				if err != nil {
+					return "", fmt.Errorf("MCP server %s: token: %w", s.mcp.Name, err)
+				}
+				params.Betas = append(params.Betas, anthropic.AnthropicBetaMCPClient2025_11_20)
+				params.MCPServers = []anthropic.BetaRequestMCPServerURLDefinitionParam{{
+					Name:               s.mcp.Name,
+					URL:                s.mcp.URL,
+					AuthorizationToken: anthropic.String(tok),
+				}}
 			}
 		}
 		resp, err := s.a.client.Beta.Messages.New(ctx, params)
@@ -143,9 +181,26 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 				}
 				emit(Event{Type: "tool_result", Message: v.Name + " ok", Data: map[string]any{"tool": v.Name, "bytes": len(out)}})
 				results = append(results, anthropic.NewBetaToolResultBlock(v.ID, out, false))
+			case anthropic.BetaMCPToolUseBlock:
+				// Executed by the API against the remote MCP server; we only report it.
+				emit(Event{Type: "mcp_tool_call", Message: v.ServerName + ": " + v.Name, Data: map[string]any{"server": v.ServerName, "tool": v.Name, "input": json.RawMessage(v.JSON.Input.Raw())}})
+			case anthropic.BetaMCPToolResultBlock:
+				text := v.Content.OfString
+				for _, t := range v.Content.OfBetaMCPToolResultBlockContent {
+					text += t.Text
+				}
+				msg := "result ok"
+				if v.IsError {
+					msg = "result error"
+				}
+				emit(Event{Type: "mcp_tool_result", Message: msg, Data: map[string]any{"tool_use_id": v.ToolUseID, "error": v.IsError, "preview": preview(text, 400)}})
 			}
 		}
 		switch resp.StopReason {
+		case anthropic.BetaStopReasonPauseTurn:
+			// The API paused a long-running MCP turn; sending the conversation
+			// back as-is lets it continue.
+			continue
 		case anthropic.BetaStopReasonToolUse:
 			if len(results) == 0 {
 				return finalText.String(), errors.New("model requested tools but produced no tool calls")
@@ -161,6 +216,14 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 		}
 	}
 	return finalText.String(), fmt.Errorf("agent stopped after %d turns without finishing", s.a.MaxTurns)
+}
+
+func preview(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func describeErr(err error) error {

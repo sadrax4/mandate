@@ -1,16 +1,47 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, GridApi } from 'ag-grid-community'
-import { api, label, money, type LedgerRow } from '../api'
+import { api, label, money, type AskResult, type Config, type LedgerRow } from '../api'
 import { Grid } from '../components/Grid'
-import { Card, Empty, navigate } from '../components/ui'
+import { Markdown } from '../components/Markdown'
+import { Card, Chip, Empty, navigate } from '../components/ui'
+
+const ASK_EXAMPLES = [
+  'Did my most recent order get captured? Confirm it with PayPal.',
+  'How much have I spent this week, and on what?',
+  'Are there any refunds, reversals or disputes on my orders?',
+  'Which orders were paid with the saved PayPal account instead of checkout?',
+]
 
 export default function Ledger() {
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [err, setErr] = useState('')
+  const [config, setConfig] = useState<Config | null>(null)
+  const [question, setQuestion] = useState('')
+  const [asking, setAsking] = useState(false)
+  const [askErr, setAskErr] = useState('')
+  const [answer, setAnswer] = useState<AskResult | null>(null)
   const gridApi = useRef<GridApi<LedgerRow> | null>(null)
   useEffect(() => {
     api.ledger().then(setRows).catch((e) => setErr(e.message))
+    api.config().then(setConfig).catch(() => setConfig(null))
   }, [])
+
+  const ask = async (e?: { preventDefault: () => void }) => {
+    e?.preventDefault()
+    const q = question.trim()
+    if (!q) return
+    setAsking(true)
+    setAskErr('')
+    setAnswer(null)
+    try {
+      setAnswer(await api.ask(q))
+    } catch (e: any) {
+      setAskErr(e.message)
+    } finally {
+      setAsking(false)
+    }
+  }
+  const mcp = config?.paypal_mcp
 
   const totals = useMemo(() => {
     const completed = rows.filter((r) => r.status === 'COMPLETED')
@@ -81,6 +112,41 @@ export default function Ledger() {
           />
         )}
       </Card>
+
+      {mcp?.enabled && (
+        <Card title="Ask about your orders" className="mt" action={<span className="muted">PayPal MCP server · {mcp.tools.length} read-only tools</span>}>
+          <p className="muted" style={{ marginTop: 0 }}>
+            The assistant reads this ledger and PayPal itself through PayPal's hosted MCP server (orders, transactions, shipment tracking, refunds, disputes,
+            invoices). It can look, never pay: only the tools that read data are enabled.
+          </p>
+          <form className="goal-form" onSubmit={ask}>
+            <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. Did my last order get captured? What did I spend this week?" maxLength={600} />
+            <button className="btn primary" disabled={asking || !question.trim()}>{asking ? 'Asking PayPal…' : 'Ask'}</button>
+          </form>
+          <div className="suggestions">
+            {ASK_EXAMPLES.map((q) => (
+              <button key={q} type="button" className="link" onClick={() => setQuestion(q)}>{q}</button>
+            ))}
+          </div>
+          {askErr && <div className="alert bad">{askErr}</div>}
+          {answer && (
+            <div className="mt">
+              <div className="summary md"><Markdown text={answer.answer} /></div>
+              {answer.tools_used.length > 0 && (
+                <div className="chips">
+                  {answer.tools_used.map((t) => <Chip key={t} tone="good">PayPal MCP · {t}</Chip>)}
+                </div>
+              )}
+              {answer.events.filter((ev) => ev.type === 'mcp_tool_call' || ev.type === 'mcp_tool_result').map((ev, i) => (
+                <div key={i} className="muted" style={{ fontSize: 12.5 }}>
+                  {ev.type === 'mcp_tool_call' ? '⚙ ' : '↩ '}{ev.message}{ev.data?.preview ? `: ${String(ev.data.preview).slice(0, 200)}` : ''}
+                </div>
+              ))}
+              {answer.warning && <div className="alert warn">{answer.warning}</div>}
+            </div>
+          )}
+        </Card>
+      )}
     </div>
   )
 }

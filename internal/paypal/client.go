@@ -102,6 +102,16 @@ type WebhookEvent struct {
 				OrderID string `json:"order_id"`
 			} `json:"related_ids"`
 		} `json:"supplementary_data"`
+		// Payment-token events (VAULT.PAYMENT-TOKEN.CREATED) carry the order
+		// that saved the account and the account's email.
+		Metadata struct {
+			OrderID string `json:"order_id"`
+		} `json:"metadata"`
+		PaymentSource struct {
+			PayPal struct {
+				EmailAddress string `json:"email_address"`
+			} `json:"paypal"`
+		} `json:"payment_source"`
 	} `json:"resource"`
 }
 
@@ -110,6 +120,9 @@ type WebhookEvent struct {
 func (e WebhookEvent) OrderID() string {
 	if e.Resource.SupplementaryData.RelatedIDs.OrderID != "" {
 		return e.Resource.SupplementaryData.RelatedIDs.OrderID
+	}
+	if e.Resource.Metadata.OrderID != "" {
+		return e.Resource.Metadata.OrderID
 	}
 	if e.ResourceType == "checkout-order" || strings.HasPrefix(e.EventType, "CHECKOUT.ORDER.") {
 		return e.Resource.ID
@@ -375,6 +388,13 @@ func (r *REST) GetOrder(ctx context.Context, orderID string) (*Order, error) {
 	return parseOrder(raw)
 }
 
+type vaultAttrs struct {
+	Vault struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"vault"`
+}
+
 func parseOrder(raw json.RawMessage) (*Order, error) {
 	var o struct {
 		ID     string `json:"id"`
@@ -404,13 +424,9 @@ func parseOrder(raw json.RawMessage) (*Order, error) {
 		} `json:"payer"`
 		PaymentSource struct {
 			PayPal struct {
-				EmailAddress string `json:"email_address"`
-				Attributes   struct {
-					Vault struct {
-						ID     string `json:"id"`
-						Status string `json:"status"`
-					} `json:"vault"`
-				} `json:"attributes"`
+				EmailAddress string     `json:"email_address"`
+				Attributes   vaultAttrs `json:"attributes"`
+				Attribute    vaultAttrs `json:"attribute"` // PayPal's docs show both spellings
 			} `json:"paypal"`
 		} `json:"payment_source"`
 	}
@@ -421,8 +437,11 @@ func parseOrder(raw json.RawMessage) (*Order, error) {
 	if out.PayerEmail == "" {
 		out.PayerEmail = o.PaymentSource.PayPal.EmailAddress
 	}
-	out.VaultID = o.PaymentSource.PayPal.Attributes.Vault.ID
-	out.VaultStatus = o.PaymentSource.PayPal.Attributes.Vault.Status
+	v := o.PaymentSource.PayPal.Attributes.Vault
+	if v.ID == "" {
+		v = o.PaymentSource.PayPal.Attribute.Vault
+	}
+	out.VaultID, out.VaultStatus = v.ID, v.Status
 	for _, l := range o.Links {
 		if l.Rel == "payer-action" || l.Rel == "approve" {
 			out.ApproveURL = l.Href

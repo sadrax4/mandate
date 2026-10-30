@@ -43,6 +43,13 @@ type Config struct {
 	// DemoBuyerHint is shown next to the PayPal button so testers know which
 	// sandbox buyer account to log in with (never used for anything else).
 	DemoBuyerHint string
+	// PayPalMCP controls the order assistant backed by PayPal's MCP server:
+	// "auto" (default: on when PayPal credentials and an MCP-capable agent
+	// provider exist), "on" or "off".
+	PayPalMCP string
+	// PayPalMCPURL overrides the MCP endpoint handed to the Anthropic MCP
+	// connector (default: PayPal's SSE endpoint for the current environment).
+	PayPalMCPURL string
 }
 
 // Server is the HTTP layer.
@@ -62,6 +69,8 @@ type Server struct {
 	// cancel, void, refund) so a double click or a webhook racing a redirect
 	// can never reserve or spend the same amount twice.
 	payMu sync.Mutex
+
+	mcp mcpState
 }
 
 // New wires the handlers.
@@ -81,6 +90,7 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 		_, err := s.createPayment(ctx, p.ID)
 		return err
 	}
+	s.initMCP()
 	s.routes()
 	return s
 }
@@ -110,6 +120,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/proposals/{id}/reject", s.handleReject)
 	m.HandleFunc("GET /api/ledger", s.handleLedger)
 	m.HandleFunc("POST /api/payments/{id}/sync", s.handleSyncPayment)
+	m.HandleFunc("POST /api/ask", s.handleAsk)
 
 	m.HandleFunc("GET /paypal/return", s.handlePayPalReturn)
 	m.HandleFunc("GET /paypal/cancel", s.handlePayPalCancel)
@@ -133,6 +144,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"public_url":      s.cfg.PublicURL,
 		"version":         s.cfg.Version,
 		"demo_buyer_hint": s.cfg.DemoBuyerHint,
+		"paypal_mcp":      s.mcpStatus(),
 	})
 }
 
@@ -566,7 +578,19 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "payment not found")
 		return
 	}
-	if pay.Status == "COMPLETED" || pay.Status == "CANCELLED" || pay.Status == "VOIDED" || pay.Status == "REFUNDED" {
+	if pay.Status == "COMPLETED" {
+		// The account may have been saved asynchronously after the capture.
+		if md, err := s.st.GetMandate(pay.MandateID); err == nil && md.SavePaymentMethod && !md.HasSavedPayment() {
+			if order, err := s.pp.GetOrder(r.Context(), pay.ID); err == nil {
+				s.payMu.Lock()
+				s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
+				s.payMu.Unlock()
+			}
+		}
+		writeJSON(w, 200, pay)
+		return
+	}
+	if pay.Status == "CANCELLED" || pay.Status == "VOIDED" || pay.Status == "REFUNDED" {
 		writeJSON(w, 200, pay)
 		return
 	}
@@ -637,20 +661,32 @@ func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	s.shopper.Forget(pay.MissionID)
 
 	// First vaulted checkout under a mandate that asked to save the account.
-	if order.VaultID != "" && order.VaultStatus == "VAULTED" {
-		if md, err := s.st.GetMandate(pay.MandateID); err == nil && md.SavePaymentMethod && !md.HasSavedPayment() {
-			now := time.Now()
-			_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error {
-				m.VaultID, m.VaultPayer, m.VaultedAt = order.VaultID, order.PayerEmail, &now
-				return nil
-			})
-			msg := "PayPal account saved on this mandate: approved carts now pay with one click"
-			if md.AutoApproveUnder > 0 && !md.RequireApproval {
-				msg += fmt.Sprintf(", and carts under %.2f %s pay with no click at all", md.AutoApproveUnder, md.Currency)
-			}
-			s.st.AddEvent(pay.MissionID, "vault", msg, map[string]any{"vault_id": order.VaultID, "payer": order.PayerEmail})
-		}
+	s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
+}
+
+// adoptVaultLocked stores a saved PayPal account on the payment's mandate
+// when the mandate asked for one and has none yet. PayPal reports the token
+// on the capture response (status VAULTED) or, when saving completes
+// asynchronously, through the VAULT.PAYMENT-TOKEN.CREATED webhook. Call with
+// payMu held.
+func (s *Server) adoptVaultLocked(pay *store.Payment, vaultID, vaultStatus, payer string) {
+	if vaultID == "" || (vaultStatus != "" && vaultStatus != "VAULTED") {
+		return
 	}
+	md, err := s.st.GetMandate(pay.MandateID)
+	if err != nil || !md.SavePaymentMethod || md.HasSavedPayment() {
+		return
+	}
+	now := time.Now()
+	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error {
+		m.VaultID, m.VaultPayer, m.VaultedAt = vaultID, payer, &now
+		return nil
+	})
+	msg := "PayPal account saved on this mandate: approved carts now pay with one click"
+	if md.AutoApproveUnder > 0 && !md.RequireApproval {
+		msg += fmt.Sprintf(", and carts under %.2f %s pay with no click at all", md.AutoApproveUnder, md.Currency)
+	}
+	s.st.AddEvent(pay.MissionID, "vault", msg, map[string]any{"vault_id": vaultID, "payer": payer})
 }
 
 // markRefunded reverses a completed capture (refund, reversal, denial after
@@ -808,6 +844,10 @@ func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
 	case "CHECKOUT.ORDER.VOIDED":
 		s.payMu.Lock()
 		s.voidPayment(pay.ID, "VOIDED", "cancelled", "PayPal voided the order; reservation released")
+		s.payMu.Unlock()
+	case "VAULT.PAYMENT-TOKEN.CREATED":
+		s.payMu.Lock()
+		s.adoptVaultLocked(pay, ev.Resource.ID, "VAULTED", ev.Resource.PaymentSource.PayPal.EmailAddress)
 		s.payMu.Unlock()
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})

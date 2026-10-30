@@ -21,9 +21,10 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 - **Approve** creates a PayPal order for the exact cart and sends you to PayPal checkout. On return the order is captured and the budget is updated. **Reject with feedback** and the agent revises in the same conversation.
 - **Save the account, pay with one click.** A mandate can ask PayPal to save your PayPal account at the first checkout (PayPal vault). After that, carts you approve are paid with one click, and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent.
 - A **ledger** lists every order with PayPal order and capture IDs, exportable to CSV.
+- **Ask about your orders.** An order assistant answers questions like "did my last order get captured?" or "any refunds or disputes?" from the ledger and from PayPal itself, through PayPal's hosted MCP server (the PayPal Agent Toolkit). Only PayPal's read-only tools are enabled for it: it can look, never pay.
 
 ### How we built it
-- **Go** backend: policy engine, agent tool loop on the Claude Messages API (official Go SDK, refusal fallback, prompt caching), PayPal Orders v2 client (OAuth2, create with items and breakdown, approve redirect, capture, reconcile, cancel, idempotency via `PayPal-Request-Id`), PayPal vault (save the account at checkout, pay later with `vault_id`, fall back to checkout when a token dies), verified PayPal webhooks, JSON persistence, server-sent events.
+- **Go** backend: policy engine, agent tool loop on the Claude Messages API (official Go SDK, refusal fallback, prompt caching), PayPal Orders v2 client (OAuth2, create with items and breakdown, approve redirect, capture, reconcile, cancel, idempotency via `PayPal-Request-Id`), PayPal vault (save the account at checkout, pay later with `vault_id`, fall back to checkout when a token dies), verified PayPal webhooks, PayPal's hosted MCP server through the Anthropic MCP connector with a read-only `mcp_toolset` (the server does the MCP handshake itself at startup to verify credentials and discover tools), JSON persistence, server-sent events.
 - **React + TypeScript + AG Grid** UI: dashboard with live budget bars, mission page with activity stream, proposal grid and approval, ledger grid with CSV export.
 - **Channel3** product search API as the live catalog, with a built-in demo catalog for offline use.
 - **Mock PayPal** simulator and a **scripted agent** make the entire flow testable without network: `go test ./...` runs the end-to-end flow through real HTTP, and a Playwright script drives the UI.
@@ -39,6 +40,7 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 - It runs live against the PayPal sandbox, Claude Opus 5.5 and Channel3's real catalog; the README shows a real run with a captured sandbox order.
 - The agent explains *why* a goal cannot be met inside a mandate, so the human adjusts the mandate instead of guessing.
 - Rejection with feedback continues the same conversation; the agent genuinely revises.
+- Two PayPal surfaces for the AI, with the money line drawn in code: the shopping agent proposes and the server pays through Orders v2 after approval; the order assistant reads PayPal through its MCP server with mutating tools disabled.
 - Agentic payments without giving the agent a wallet: the saved PayPal account turns a mandate into a real spending authority (one-click approvals, no-click auto-pay under the threshold), and the policy engine still bounds every charge.
 
 ### What we learned

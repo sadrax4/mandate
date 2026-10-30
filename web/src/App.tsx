@@ -50,6 +50,11 @@ export default function App() {
             <span className={`mode ${config.paypal_mode === 'mock' ? 'mode-mock' : 'mode-live'}`}>PayPal: {config.paypal_mode}</span>
             <span className={`mode ${config.llm_provider === 'fake' ? 'mode-mock' : 'mode-live'}`}>Agent: {config.llm_provider.replace('anthropic:', '')}</span>
             <span className={`mode ${config.catalog === 'mock' ? 'mode-mock' : 'mode-live'}`}>Catalog: {config.catalog}</span>
+            {config.paypal_mcp?.enabled && (
+              <span className="mode mode-live" title={`Read-only PayPal MCP tools: ${config.paypal_mcp.tools.join(', ')}`}>
+                PayPal MCP: {config.paypal_mcp.tools.length} tools
+              </span>
+            )}
           </div>
         )}
       </header>

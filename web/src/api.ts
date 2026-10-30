@@ -132,7 +132,11 @@ export type Config = {
   public_url: string
   version: string
   demo_buyer_hint?: string
+  paypal_mcp?: { enabled: boolean; tools: string[]; available?: number; error?: string; url?: string; checking?: boolean }
 }
+
+export type AskEvent = { type: string; message: string; data?: any }
+export type AskResult = { answer: string; tools_used: string[]; events: AskEvent[]; warning?: string }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...init })
@@ -157,6 +161,8 @@ export const api = {
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
   createMission: (mandate_id: string, goal: string) =>
     req<Mission>('/api/missions', { method: 'POST', body: JSON.stringify({ mandate_id, goal }) }),
+  ask: (question: string, mandateId?: string) =>
+    req<AskResult>('/api/ask', { method: 'POST', body: JSON.stringify({ question, mandate_id: mandateId || '' }) }),
   approve: (proposalId: string) =>
     req<{ payment: Payment; approve_url: string }>(`/api/proposals/${proposalId}/approve`, { method: 'POST' }),
   reject: (proposalId: string, reason: string) =>

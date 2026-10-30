@@ -133,13 +133,16 @@ func env(k, def string) string {
 	return def
 }
 
-// loadDotEnv reads KEY=VALUE lines without overriding variables already set.
+// loadDotEnv reads KEY=VALUE lines. Real environment variables win over the
+// file; inside the file the last occurrence of a key wins, so editing a value
+// at the bottom of .env behaves as people expect.
 func loadDotEnv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	fromFile := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -152,9 +155,13 @@ func loadDotEnv(path string) {
 			continue
 		}
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if i := strings.Index(v, " #"); i >= 0 { // trailing comment
+			v = strings.TrimSpace(v[:i])
+		}
 		v = strings.Trim(v, `"'`)
-		if os.Getenv(k) == "" {
+		if os.Getenv(k) == "" || fromFile[k] {
 			os.Setenv(k, v)
+			fromFile[k] = true
 		}
 	}
 }

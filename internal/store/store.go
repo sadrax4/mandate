@@ -59,6 +59,16 @@ func IsFinalPayment(status string) bool {
 	return false
 }
 
+// IsCaptured reports whether PayPal has taken, or is taking, the money for
+// the order: it can no longer be captured again or withdrawn.
+func IsCaptured(status string) bool {
+	switch status {
+	case PaymentCompleted, PaymentPartiallyRefunded, PaymentPending:
+		return true
+	}
+	return false
+}
+
 // Proposal status values.
 const (
 	ProposalPending          = "pending_approval"
@@ -609,18 +619,31 @@ func (st *Store) UpdatePayment(id string, fn func(p *Payment)) (*Payment, error)
 	return &c, nil
 }
 
+// reservedTotals is the one place that defines what counts as reserved:
+// every payment row still holding a reservation, summed per mandate.
+// Call with the lock held.
+func (st *Store) reservedTotals() map[string]float64 {
+	totals := map[string]float64{}
+	for _, p := range st.s.Payments {
+		if p.Reserved {
+			totals[p.MandateID] += p.Amount
+		}
+	}
+	return totals
+}
+
 // SumReserved is the total still reserved by the mandate's payment rows.
-// It is the one place that defines what counts as reserved.
 func (st *Store) SumReserved(mandateID string) float64 {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
-	total := 0.0
-	for _, p := range st.s.Payments {
-		if p.MandateID == mandateID && p.Reserved {
-			total += p.Amount
-		}
-	}
-	return total
+	return st.reservedTotals()[mandateID]
+}
+
+// ReservedTotals returns every mandate's reserved total in one pass.
+func (st *Store) ReservedTotals() map[string]float64 {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.reservedTotals()
 }
 
 // LivePaymentFor returns the payment row of a proposal that can still be

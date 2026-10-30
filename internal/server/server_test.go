@@ -1430,6 +1430,24 @@ func TestPendingCaptureBooksOnlyWhenCompleted(t *testing.T) {
 	if pay.Accounted || pay.Status != store.PaymentPending || spent != 0 || reserved != pay.Amount {
 		t.Fatalf("pending capture must stay reserved and unbooked: %+v spent=%v reserved=%v", pay, spent, reserved)
 	}
+	// Meanwhile nothing may capture it again or withdraw it.
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pay.ProposalID+"/reject", map[string]any{"reason": "no"}, &rj); code != 409 {
+		t.Fatalf("withdrawing a pending capture must be refused, got %d %v", code, rj)
+	}
+	r, err := e.cli.Get(e.ts.URL + "/paypal/return?token=" + orderID) // the buyer reloads the return page
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=pending") {
+		t.Fatalf("refreshed return must report pending, got %s", loc)
+	}
+	e.webhook(`{"id":"WH-appr","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"APPROVED"}}`)
+	e.post("/api/payments/"+orderID+"/sync", nil, &rj)
+	if cur, _ := e.st.GetPayment(orderID); cur.Status != store.PaymentPending || cur.Reserved != true {
+		t.Fatalf("a pending capture must survive a reload, a webhook and a status check: %+v", cur)
+	}
 	// PayPal completes the capture later and says so
 	e.pp.SetCaptureStatus(orderID, "COMPLETED")
 	e.webhook(`{"id":"WH-done","event_type":"PAYMENT.CAPTURE.COMPLETED","resource_type":"capture","resource":{"id":"` + pay.CaptureID + `","status":"COMPLETED","supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`)
@@ -1547,4 +1565,77 @@ func TestServerCloseIsIdempotent(t *testing.T) {
 	e := newEnv(t)
 	e.srv.Close()
 	e.srv.Close()
+}
+
+func TestDeclinedCheckoutCaptureHandsTheProposalBack(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.pp.NextCaptureStatus = "DECLINED"
+	token := orderID
+	r, err := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {token}, "action": {"approve"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	r2, err := e.cli.Get(r.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if loc := r2.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=denied") {
+		t.Fatalf("declined capture must land on the denied banner, got %s", loc)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Accounted || pay.Status != store.PaymentDenied || spent != 0 || reserved != 0 {
+		t.Fatalf("declined capture: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	pr, _ := e.st.GetProposal(pay.ProposalID)
+	ms, _ := e.st.GetMission(msID)
+	if pr.Status != store.ProposalPending || pr.OrderID != "" || ms.Status != store.MissionAwaitingApproval || ms.OrderID != "" {
+		t.Fatalf("the human must be able to approve again: proposal=%+v mission=%s/%s", pr, ms.Status, ms.OrderID)
+	}
+	// approving again creates a fresh order
+	var ap map[string]any
+	if code := e.post("/api/proposals/"+pay.ProposalID+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve again: %d %v", code, ap)
+	}
+	if ap["payment"].(map[string]any)["id"] == orderID {
+		t.Fatal("a declined order must not be reused")
+	}
+}
+
+func TestRejectWithdrawsTheLiveOrderOfAProposalThatLostItsID(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	_, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	_, _ = e.st.UpdateProposal(pid, func(p *store.Proposal) { p.OrderID = "" })
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "no"}, &rj); code != 200 {
+		t.Fatalf("reject: %d %v", code, rj)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	_, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentCancelled || pay.Reserved || reserved != 0 {
+		t.Fatalf("orphaned order must be withdrawn: %+v reserved=%v", pay, reserved)
+	}
+}
+
+func TestSyncOfAGivenUpOrderUnknownToPayPal(t *testing.T) {
+	e := newEnv(t)
+	mdID, _, orderID := e.startAutoApproved()
+	_, _ = e.st.UpdatePayment(orderID, func(x *store.Payment) { x.Status = store.PaymentCancelled; x.Reserved = false })
+	e.srv.recomputeReserved(mdID)
+	e.pp.Drop(orderID) // PayPal no longer has it
+	var out map[string]any
+	if code := e.post("/api/payments/"+orderID+"/sync", nil, &out); code != 200 {
+		t.Fatalf("a 404 at PayPal is not an error for a given-up row: %d %v", code, out)
+	}
 }

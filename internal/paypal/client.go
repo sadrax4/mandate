@@ -86,6 +86,18 @@ func (o *Order) Captured() bool {
 	return o.CaptureStatus == "" || o.CaptureStatus == "COMPLETED" || o.CaptureStatus == "REFUNDED" || o.CaptureStatus == "PARTIALLY_REFUNDED"
 }
 
+// Pending reports a capture PayPal has accepted but not completed yet (an
+// eCheck or a risk review).
+func (o *Order) Pending() bool {
+	return o != nil && o.Status == "COMPLETED" && o.CaptureStatus == "PENDING"
+}
+
+// Declined reports a capture attempt that failed for good (DECLINED or
+// FAILED): the order is terminal at PayPal and no money moved.
+func (o *Order) Declined() bool {
+	return o != nil && o.Status == "COMPLETED" && !o.Captured() && !o.Pending()
+}
+
 // Client is implemented by the real API client and the Mock.
 type Client interface {
 	CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error)
@@ -475,7 +487,15 @@ func parseOrder(raw json.RawMessage) (*Order, error) {
 		out.Currency = pu.Amount.CurrencyCode
 		out.Amount, _ = strconv.ParseFloat(pu.Amount.Value, 64)
 		if len(pu.Payments.Captures) > 0 {
-			c := pu.Payments.Captures[0]
+			// Captures are listed oldest first; the one that moved money (or is
+			// about to) is the one that matters, otherwise the latest attempt.
+			c := pu.Payments.Captures[len(pu.Payments.Captures)-1]
+			for _, cand := range pu.Payments.Captures {
+				switch cand.Status {
+				case "COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "PENDING":
+					c = cand
+				}
+			}
 			out.CaptureID = c.ID
 			out.CaptureStatus = c.Status
 			if c.Amount.Value != "" {

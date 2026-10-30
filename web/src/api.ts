@@ -258,6 +258,9 @@ export const STATUS_LABEL: Record<string, string> = {
 /** Payment statuses that can never become payable again (mirrors store.IsFinalPayment). */
 export const FINAL_PAYMENT_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED', 'CANCELLED', 'VOIDED', 'EXPIRED', 'REFUNDED', 'REVERSED', 'DENIED']
 export const isFinalPayment = (s: string) => FINAL_PAYMENT_STATUSES.includes(s)
+/** Payment statuses where PayPal has taken, or is taking, the money: no checkout, no withdrawal (mirrors store.IsCaptured). */
+export const CAPTURED_PAYMENT_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED', 'PENDING']
+export const isCaptured = (s: string) => CAPTURED_PAYMENT_STATUSES.includes(s)
 
 export const label = (s: string) => STATUS_LABEL[s] ?? s.replace(/_/g, ' ')
 

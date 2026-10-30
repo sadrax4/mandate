@@ -73,6 +73,10 @@ func (m *Mock) CreateOrder(_ context.Context, req CreateOrderRequest) (*Order, e
 		if m.VaultCompletesOnCreate {
 			o.Status = "COMPLETED"
 			o.CaptureID = "CAP" + o.ID[4:]
+			o.CaptureStatus = "COMPLETED"
+			if m.NextCaptureStatus != "" {
+				o.CaptureStatus, m.NextCaptureStatus = m.NextCaptureStatus, ""
+			}
 		}
 	} else {
 		o.ApproveURL = fmt.Sprintf("%s/mock/paypal/approve?token=%s", m.PublicURL, id)
@@ -146,9 +150,8 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 	if !ok {
 		return nil, &APIError{Status: 404, Body: `{"name":"RESOURCE_NOT_FOUND"}`}
 	}
-	if o.Status == "COMPLETED" {
-		out := o.Order
-		return &out, nil
+	if o.CaptureID != "" {
+		return nil, &APIError{Status: 422, Body: `{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"ORDER_ALREADY_CAPTURED"}]}`}
 	}
 	if !o.Approved {
 		return nil, &APIError{Status: 422, Body: `{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"ORDER_NOT_APPROVED"}]}`}
@@ -174,6 +177,13 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 // the tests send.
 func (m *Mock) VerifyWebhook(_ context.Context, _ string, h http.Header, _ []byte) (bool, error) {
 	return h.Get("Paypal-Transmission-Sig") == "mock", nil
+}
+
+// Drop forgets an order, as PayPal does with old ones (tests).
+func (m *Mock) Drop(orderID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.orders, orderID)
 }
 
 // SetCaptureStatus changes a captured order's capture status, as PayPal does

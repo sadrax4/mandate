@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, RowClassRules } from 'ag-grid-community'
-import { api, isFinalPayment, label, money, type CartItem, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
+import { api, isCaptured, isFinalPayment, label, money, type CartItem, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
@@ -221,7 +221,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const banner = params.get('payment')
   if (!detail || !mission) return <div className="page">{err ? <div className="alert bad">{err}</div> : <Empty>Loading mission…</Empty>}</div>
 
-  const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status)
+  const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status) && !isCaptured(payment.status)
   const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'
   const remaining = mandate ? mandate.total_budget - mandate.spent - mandate.reserved : 0
 
@@ -230,6 +230,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
       {banner === 'completed' && <div className="banner good">✓ Payment captured through PayPal. The mandate's spent total has been updated.</div>}
       {banner === 'cancelled' && <div className="banner warn">Checkout was cancelled at PayPal. The budget reservation was released.</div>}
       {banner === 'failed' && <div className="banner bad">PayPal capture failed. See the activity log for details.</div>}
+      {banner === 'denied' && <div className="banner bad">PayPal declined the capture. The budget reservation was released; approve the cart again to pay through a new checkout.</div>}
+      {banner === 'pending' && <div className="banner warn">PayPal accepted the payment but the capture is still pending (for example an eCheck or a review). The mandate books it as soon as PayPal completes it.</div>}
       <div className="mission-head">
         <div>
           <div className="mission-meta">
@@ -400,11 +402,17 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <dt>Checkout</dt>
                 <dd>{payment.vaulted ? 'none: paid with the PayPal account saved on this mandate' : 'PayPal checkout, approved by the buyer'}</dd>
               </dl>
-              {payment.approve_url && !isFinalPayment(payment.status) && (
+              {payment.approve_url && !isFinalPayment(payment.status) && !isCaptured(payment.status) && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
                   <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>
                   <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
                   <span className="muted">{payment.mode === 'mock' ? 'Simulated checkout page' : config?.demo_buyer_hint ? `Sandbox buyer for testing: ${config.demo_buyer_hint}` : 'Log in with a sandbox buyer account'}</span>
+                </div>
+              )}
+              {payment.status === 'PENDING' && (
+                <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
+                  <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
+                  <span className="muted">The capture is pending at PayPal; it is booked automatically once it completes.</span>
                 </div>
               )}
             </Card>

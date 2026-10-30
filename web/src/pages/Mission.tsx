@@ -3,6 +3,7 @@ import type { ColDef, RowClassRules } from 'ag-grid-community'
 import { api, label, money, type CartItem, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, Pill } from '../components/ui'
+import { Markdown } from '../components/Markdown'
 
 const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'message']
 const CHECK_LABEL: Record<string, string> = {
@@ -211,7 +212,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
           {mission.status === 'no_proposal' && (
             <Card title="No proposal" className="mt-0">
               <p className="muted" style={{ marginTop: 0 }}>The agent decided the goal cannot be met inside this mandate.</p>
-              {mission.summary && <div className="summary">{mission.summary}</div>}
+              {mission.summary && <div className="summary md"><Markdown text={mission.summary} /></div>}
             </Card>
           )}
 
@@ -235,7 +236,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                   <span key={i} className="check-bad">⛔ {v.message}</span>
                 ))}
               </div>
-              {latest.summary && <div className="summary">{latest.summary}</div>}
+              {latest.summary && <div className="summary md"><Markdown text={latest.summary} /></div>}
               {latest.feedback && <div className="alert warn">Your feedback: {latest.feedback}</div>}
 
               {canDecide && (
@@ -302,7 +303,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
           {mission.summary && mission.status !== 'no_proposal' && (
             <Card title="Agent's summary" className="mt">
-              <div className="summary">{mission.summary}</div>
+              <div className="summary md"><Markdown text={mission.summary} /></div>
             </Card>
           )}
 
@@ -376,7 +377,7 @@ function EventRow({ ev }: { ev: Event }) {
     <div className={`ev ev-${ev.type}`}>
       <div className="ico">{ICON[ev.type] ?? '•'}</div>
       <div className="body">
-        <div className="msg">{msg}</div>
+        <div className="msg md">{ev.type === 'assistant' ? <Markdown text={msg} /> : msg}</div>
         {detailsNode}
         <div className="meta">{label(ev.type)} · {time}</div>
       </div>

@@ -78,7 +78,9 @@ How to work:
 5. If the goal cannot be met within the mandate, do not propose. Explain precisely what blocks it (for example "the only 4K USB-C monitors cost at least $329, above the $250 per-item cap") so the human can adjust the mandate.
 6. After propose_cart returns pending_approval or auto_approved, stop calling tools and write a 2-4 sentence summary for the human: what you chose, why, the total, and what you considered and rejected.
 
-Never invent products, prices or ratings; only use what the tools return. Never propose a cart that failed check_mandate. Keep your messages concise.`
+Rules of the policy engine you should know: the minimum-rating rule only applies to products that have a rating; a product with no reviews passes it (say so in your reason and prefer rated alternatives when they exist). The per-item cap applies to the unit price; the budget applies to the cart total including quantities.
+
+Never invent products, prices or ratings; only use what the tools return. Never propose a cart that failed check_mandate. Keep your messages concise and use plain text with short bullet lists where helpful.`
 
 // Run executes a brand-new mission: it creates the session, sends the goal and
 // records the outcome on the mission.

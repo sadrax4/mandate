@@ -1,8 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { useConfig } from '../config'
 import { api } from '../api'
 import { Card, navigate } from '../components/ui'
 
 export default function MandateForm() {
+  const config = useConfig()
   const [categories, setCategories] = useState<string[]>([])
   const [name, setName] = useState('')
   const [budget, setBudget] = useState('250')
@@ -29,7 +31,7 @@ export default function MandateForm() {
     try {
       await api.createMandate({
         name,
-        currency: 'USD',
+        currency: config?.currency || 'USD',
         total_budget: Number(budget),
         max_per_item: Number(maxItem) || 0,
         auto_approve_under: Number(autoUnder) || 0,

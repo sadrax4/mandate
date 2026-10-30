@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, GridApi } from 'ag-grid-community'
-import { api, label, money, type AskResult, type Config, type LedgerRow } from '../api'
+import { api, label, money, type AskResult, type LedgerRow } from '../api'
+import { useConfig } from '../config'
 import { Grid } from '../components/Grid'
 import { Markdown } from '../components/Markdown'
 import { Card, Chip, Empty, navigate } from '../components/ui'
@@ -15,7 +16,7 @@ const ASK_EXAMPLES = [
 export default function Ledger() {
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [err, setErr] = useState('')
-  const [config, setConfig] = useState<Config | null>(null)
+  const config = useConfig()
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [askErr, setAskErr] = useState('')
@@ -23,7 +24,6 @@ export default function Ledger() {
   const gridApi = useRef<GridApi<LedgerRow> | null>(null)
   useEffect(() => {
     api.ledger().then(setRows).catch((e) => setErr(e.message))
-    api.config().then(setConfig).catch(() => setConfig(null))
   }, [])
 
   const ask = async (e?: { preventDefault: () => void }) => {
@@ -81,8 +81,8 @@ export default function Ledger() {
       <div className="stats">
         <div className="stat"><b>{totals.count}</b><span>orders</span></div>
         <div className="stat"><b>{totals.completed}</b><span>completed</span></div>
-        <div className="stat"><b>{money(totals.paid)}</b><span>captured</span></div>
-        <div className="stat"><b>{money(totals.pending)}</b><span>awaiting buyer</span></div>
+        <div className="stat"><b>{money(totals.paid, config?.currency)}</b><span>captured</span></div>
+        <div className="stat"><b>{money(totals.pending, config?.currency)}</b><span>awaiting buyer</span></div>
       </div>
       {err && <div className="alert bad">{err}</div>}
       <Card
@@ -132,12 +132,12 @@ export default function Ledger() {
           {answer && (
             <div className="mt">
               <div className="summary md"><Markdown text={answer.answer} /></div>
-              {answer.tools_used.length > 0 && (
+              {(answer.tools_used ?? []).length > 0 && (
                 <div className="chips">
-                  {answer.tools_used.map((t) => <Chip key={t} tone="good">PayPal MCP · {t}</Chip>)}
+                  {(answer.tools_used ?? []).map((t) => <Chip key={t} tone="good">PayPal MCP · {t}</Chip>)}
                 </div>
               )}
-              {answer.events.filter((ev) => ev.type === 'mcp_tool_call' || ev.type === 'mcp_tool_result').map((ev, i) => (
+              {(answer.events ?? []).filter((ev) => ev.type === 'mcp_tool_call' || ev.type === 'mcp_tool_result').map((ev, i) => (
                 <div key={i} className="muted" style={{ fontSize: 12.5 }}>
                   {ev.type === 'mcp_tool_call' ? '⚙ ' : '↩ '}{ev.message}{ev.data?.preview ? `: ${String(ev.data.preview).slice(0, 200)}` : ''}
                 </div>

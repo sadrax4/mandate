@@ -5,6 +5,7 @@ import MandateForm from './pages/MandateForm'
 import MissionPage from './pages/Mission'
 import Ledger from './pages/Ledger'
 import Insights from './pages/Insights'
+import { ConfigContext } from './config'
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash || '#/')
@@ -33,6 +34,7 @@ export default function App() {
 
   const active = (p: string) => (path === p || (p !== '/' && path.startsWith(p)) ? 'active' : '')
   return (
+    <ConfigContext.Provider value={config}>
     <div className="app">
       <header className="topbar">
         <a className="brand" href="#/">
@@ -66,5 +68,6 @@ export default function App() {
         Built for the PayPal AI Hackathon. The agent can research and propose; only a human approval and PayPal checkout can move money.
       </footer>
     </div>
+    </ConfigContext.Provider>
   )
 }

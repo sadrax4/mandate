@@ -3,7 +3,7 @@ import { Fragment, type ReactNode } from 'react'
 /** Inline formatting: **bold**, `code`, *italic*. Input is plain text, never HTML. */
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = []
-  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*)/g
+  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*(?!\s)[^*\n]+?(?<!\s)\*)/g
   let last = 0
   let m: RegExpExecArray | null
   let i = 0
@@ -48,7 +48,7 @@ export function Markdown({ text }: { text: string }) {
     const line = raw.trim()
     const h = /^(#{1,6})\s+(.*)$/.exec(line)
     const bullet = /^[-*•]\s+(.*)$/.exec(line)
-    const num = /^\d+[.)]\s+(.*)$/.exec(line)
+    const num = /^\d{1,3}[.)]\s+(.*)$/.exec(line)
     if (line === '') {
       flushPara()
       flushList()

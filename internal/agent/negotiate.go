@@ -53,7 +53,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 	service := strings.TrimSpace(m.Goal)
 	list := mandate.Round(limit * 1.45)
 	floor := mandate.Round(limit * 0.82)
-	neg := &store.Negotiation{Service: service, Seller: "Seller agent", ListPrice: list, Limit: limit}
+	neg := &store.Negotiation{Service: service, Seller: "Seller agent", ListPrice: list, Limit: limit, Rounds: []store.NegotiationRound{}}
 	_, _ = s.Store.UpdateMission(missionID, func(x *store.Mission) {
 		x.Status = store.MissionRunning
 		x.Error = ""

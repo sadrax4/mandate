@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, RowClassRules } from 'ag-grid-community'
-import { api, isFinalPayment, label, money, type CartItem, type Config, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
+import { api, isFinalPayment, label, money, type CartItem, type Event, type MissionDetail, type Payment, type Product, type Proposal } from '../api'
 import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, navigate, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
 import { StandingOrderButtons } from './Dashboard'
+import { useConfig } from '../config'
 import { NegotiationCard } from '../components/Negotiation'
 
 const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'negotiation', 'message']
@@ -61,7 +62,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const [busy, setBusy] = useState('')
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
-  const [config, setConfig] = useState<Config | null>(null)
+  const config = useConfig()
   const timelineRef = useRef<HTMLDivElement>(null)
   const statusRef = useRef('')
 
@@ -75,10 +76,6 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         setErr('')
       })
       .catch((e) => setErr(e.message))
-
-  useEffect(() => {
-    api.config().then(setConfig).catch(() => {})
-  }, [])
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -116,7 +113,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const latest: Proposal | undefined = proposals[proposals.length - 1]
   const payments = detail?.payments ?? []
   // payments arrive newest-first; prefer the one for the latest proposal
-  const payment: Payment | undefined = (latest && payments.find((p) => p.proposal_id === latest.id)) || payments[0]
+  // Only the latest proposal's own order is shown; older orders live under "Earlier proposals".
+  const payment: Payment | undefined = latest ? payments.find((p) => p.proposal_id === latest.id) : payments[0]
   const mission = detail?.mission
   const mandate = detail?.mandate
 
@@ -310,8 +308,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
               <Grid<CartItem> rowData={latest.cart.items} columnDefs={itemCols} getRowId={(p) => p.data.product_id} />
               {latest.cart.items.some((i) => i.reason) && (
                 <ul className="reasons">
-                  {latest.cart.items.map((i) => (
-                    <li key={i.product_id}>
+                  {latest.cart.items.map((i, idx) => (
+                    <li key={`${i.product_id}-${idx}`}>
                       <b>{i.title}</b>
                       {i.reason ? <span> · {i.reason}</span> : null}
                     </li>

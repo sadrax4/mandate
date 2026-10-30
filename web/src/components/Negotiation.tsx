@@ -8,10 +8,11 @@ import { usePrefersDark } from './Grid'
 /** Transcript and price chart of a buyer agent negotiating with a seller agent. */
 export function NegotiationCard({ negotiation: n, currency, running }: { negotiation: Negotiation; currency: string; running: boolean }) {
   const isDark = usePrefersDark()
+  const rounds = n.rounds ?? []
   const rows = useMemo(() => {
     const out: { round: string; buyer?: number; seller?: number }[] = []
     let cur: { round: string; buyer?: number; seller?: number } | null = null
-    for (const r of n.rounds) {
+    for (const r of rounds) {
       if (!cur || cur.round !== String(r.round)) {
         cur = { round: String(r.round) }
         out.push(cur)
@@ -22,7 +23,7 @@ export function NegotiationCard({ negotiation: n, currency, running }: { negotia
       }
     }
     return out
-  }, [n.rounds])
+  }, [rounds])
   const chart = useMemo<AgCartesianChartOptions>(
     () => ({
       theme: isDark ? 'ag-default-dark' : 'ag-default',
@@ -61,7 +62,7 @@ export function NegotiationCard({ negotiation: n, currency, running }: { negotia
         The buyer agent works for you under the mandate (hard limit {money(n.limit, currency)}, never revealed); the seller agent asked {money(n.list_price, currency)}. Neither agent can pay: the agreed price becomes a proposal for you to approve.
       </p>
       <div className="transcript">
-        {n.rounds.map((r, i) => (
+        {rounds.map((r, i) => (
           <div key={i} className={`bubble ${r.party}`}>
             <div className="who">
               {r.party === 'buyer' ? 'Buyer agent' : n.seller}

@@ -74,7 +74,7 @@ func (s *Server) handleInsights(w http.ResponseWriter, _ *http.Request) {
 		b.Amount = mandate.Round(b.Amount + amount)
 		b.Count++
 	}
-	var items []insightItem
+	items := []insightItem{}
 	captured, orders, lines := 0.0, 0, 0
 	for _, p := range s.st.ListPayments() {
 		md := mdByID[p.MandateID]

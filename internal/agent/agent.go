@@ -482,6 +482,29 @@ func (s *Shopper) buildCart(ctx context.Context, missionID string, items []cartI
 		return nil, mandate.Cart{}, errors.New("items must not be empty")
 	}
 	cart := mandate.Cart{Currency: md.Currency}
+	// The same product listed twice becomes one line with the quantities added.
+	merged := make([]cartItemInput, 0, len(items))
+	for _, it := range items {
+		dup := false
+		for i := range merged {
+			if merged[i].ProductID == it.ProductID {
+				if it.Quantity > 0 {
+					merged[i].Quantity += it.Quantity
+				} else {
+					merged[i].Quantity++
+				}
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			if it.Quantity <= 0 {
+				it.Quantity = 1
+			}
+			merged = append(merged, it)
+		}
+	}
+	items = merged
 	for _, it := range items {
 		var p *catalog.Product
 		if cg, ok := s.Catalog.(catalog.CurrencyGetter); ok {

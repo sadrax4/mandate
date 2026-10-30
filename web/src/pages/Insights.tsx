@@ -115,6 +115,7 @@ export default function InsightsPage() {
 
   if (err) return <div className="page"><div className="alert bad">{err}</div></div>
   if (!data) return <div className="page"><Empty>Loading…</Empty></div>
+  const items = data.items ?? []
   const t = data.totals
   return (
     <div className="page">
@@ -146,7 +147,7 @@ export default function InsightsPage() {
       <Card
         title="Purchased items"
         action={
-          data.items.length > 0 ? (
+          items.length > 0 ? (
             <div className="toolbar">
               <input value={quick} onChange={(e) => { setQuick(e.target.value); gridApi.current?.setGridOption('quickFilterText', e.target.value) }} placeholder="Quick filter: product, merchant, mandate…" aria-label="Quick filter for purchased items" />
               <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-items.csv' })}>Export CSV</button>
@@ -154,17 +155,17 @@ export default function InsightsPage() {
           ) : undefined
         }
       >
-        {data.items.length === 0 ? (
+        {items.length === 0 ? (
           <Empty>No orders yet.</Empty>
         ) : (
           <Grid<InsightItem>
-            rowData={data.items}
+            rowData={items}
             columnDefs={cols}
             getRowId={(p) => p.data.order_id + ':' + p.data.product_id}
             onGridReady={(e) => { gridApi.current = e.api }}
             onRowClicked={(e) => e.data && navigate(`#/missions/${e.data.mission_id}`)}
             rowClass="row-link"
-            pagination={data.items.length > 25}
+            pagination={items.length > 25}
             paginationPageSize={25}
             enableCellTextSelection
             tooltipShowDelay={300}

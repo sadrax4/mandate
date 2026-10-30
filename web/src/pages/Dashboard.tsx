@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { api, money, type Config, type Mandate, type Mission } from '../api'
+import { api, money, type Mandate, type Mission } from '../api'
+import { useConfig } from '../config'
 import { BudgetBar, Card, Chip, Empty, Pill, navigate } from '../components/ui'
 
 const DEMO_GOALS: { goal: string; note?: string; kind?: string }[] = [
@@ -15,7 +16,7 @@ export default function Dashboard() {
   const [missions, setMissions] = useState<Mission[]>([])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
-  const [config, setConfig] = useState<Config | null>(null)
+  const config = useConfig()
   const [showAll, setShowAll] = useState(false)
   const [guideHidden, setGuideHidden] = useState(() => {
     try {
@@ -38,12 +39,12 @@ export default function Dashboard() {
       .then(([m, ms]) => {
         setMandates(m)
         setMissions(ms)
+        setError('')
       })
       .catch((e) => setError(e.message))
 
   useEffect(() => {
     load()
-    api.config().then(setConfig).catch(() => setConfig(null))
     const t = setInterval(load, 4000)
     return () => clearInterval(t)
   }, [])
@@ -56,7 +57,7 @@ export default function Dashboard() {
     try {
       await api.createMandate({
         name: 'Desk refresh',
-        currency: 'USD',
+        currency: config?.currency || 'USD',
         total_budget: 300,
         max_per_item: 150,
         auto_approve_under: 40,
@@ -313,19 +314,26 @@ export function StandingOrderButtons({ mission, onChanged }: { mission: Mission;
 
 function ForgetButton({ mandate: m, onChanged }: { mandate: Mandate; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
   const forget = async () => {
     if (!window.confirm('Forget the PayPal account saved on this mandate? Future carts go through PayPal checkout again.')) return
     setBusy(true)
+    setErr('')
     try {
       await api.forgetPayment(m.id)
       onChanged()
+    } catch (e: any) {
+      setErr(e.message)
     } finally {
       setBusy(false)
     }
   }
   return (
-    <button type="button" className="link" onClick={forget} disabled={busy} title="Revoke: the agent loses the ability to pay without you">
-      {busy ? 'Forgetting…' : 'forget saved PayPal'}
-    </button>
+    <>
+      <button type="button" className="link" onClick={forget} disabled={busy} title="Revoke: the agent loses the ability to pay without you">
+        {busy ? 'Forgetting…' : 'forget saved PayPal'}
+      </button>
+      {err && <span className="alert bad" style={{ padding: '2px 8px' }}>{err}</span>}
+    </>
   )
 }

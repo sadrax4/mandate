@@ -111,7 +111,7 @@ func (m *Mission) clone() Mission {
 	}
 	if m.Negotiation != nil {
 		n := *m.Negotiation
-		n.Rounds = append([]NegotiationRound(nil), m.Negotiation.Rounds...)
+		n.Rounds = append([]NegotiationRound{}, m.Negotiation.Rounds...)
 		c.Negotiation = &n
 	}
 	if m.NextRunAt != nil {

@@ -188,7 +188,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
-	var events []map[string]any
+	events := []map[string]any{}
 	var used []string
 	started := time.Now()
 	answer, err := sess.Send(ctx, in.Question, nil, func(e agent.Event) {

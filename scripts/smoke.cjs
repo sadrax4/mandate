@@ -7,8 +7,16 @@ const base = process.env.BASE_URL || 'http://localhost:8080'
 const S = process.env.SHOTS || 'docs/screenshots'
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1360, height: 900 } })
-page.on('pageerror', (e) => console.log('PAGEERROR', e.message))
+let pageErrors = 0
+page.on('pageerror', (e) => { pageErrors++; console.log('PAGEERROR', e.message) })
 page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE', m.text()) })
+
+// every page must render on a fresh install (empty lists, no data)
+for (const h of ['#/insights', '#/ledger', '#/mandates/new']) {
+  await page.goto(base + '/' + h)
+  await page.waitForTimeout(500)
+}
+if (pageErrors) throw new Error('page errors on a fresh install')
 
 await page.goto(base + '/#/')
 await page.waitForSelector('text=Mandates')
@@ -104,5 +112,6 @@ await dark.goto(base + '/#/')
 await dark.waitForSelector('text=Desk refresh')
 await dark.screenshot({ path: `${S}/08-dashboard-dark.png`, fullPage: true })
 await browser.close()
+if (pageErrors) throw new Error(`${pageErrors} page error(s) during the walk-through`)
 console.log('SMOKE_OK')
 })().catch(e => { console.error("SMOKE_FAIL", e); process.exit(1) })

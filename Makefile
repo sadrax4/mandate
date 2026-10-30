@@ -6,13 +6,12 @@ run:
 
 ## web: build the React UI into web/dist
 web:
-	npm --prefix web install --no-audit --no-fund
-	npm --prefix web run build
+	cd web && npm install --no-audit --no-fund && npm run build
 
 ## dev: run the Go API and the Vite dev server with hot reload
 dev:
 	@echo "API on :8080, UI on :5173 (proxied)"
-	@(go run ./cmd/mandate &) && npm --prefix web run dev
+	@(go run ./cmd/mandate &) && cd web && npm run dev
 
 ## build: compile a static binary to ./bin/mandate
 build: web

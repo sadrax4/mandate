@@ -37,9 +37,9 @@ Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.
 Requirements: Go 1.25+, Node 22+. Nothing else is required for the offline demo.
 
 ```bash
-git clone <this repo> && cd mandate
-npm --prefix web install && npm --prefix web run build   # builds the UI into web/dist
-go run ./cmd/mandate                                     # http://localhost:8080
+git clone https://github.com/sadrax4/mandate && cd mandate
+cd web && npm install && npm run build && cd ..   # builds the UI into web/dist (works on Windows, macOS, Linux)
+go run ./cmd/mandate                               # http://localhost:8080
 ```
 
 With no keys configured the app runs in **offline demo mode**: a scripted agent, the built-in demo catalog and a simulated PayPal checkout page. Click *Create demo mandate*, pick a suggested goal, approve, "pay", and look at the ledger. The whole flow takes about a minute and needs no accounts.

@@ -554,7 +554,7 @@ func (s *Server) staticHandler() http.Handler {
 		}
 		if _, err := os.Stat(index); err != nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, "<h1>Mandate API is running</h1><p>The web UI is not built. Run <code>npm --prefix web install && npm --prefix web run build</code>, or use the API at <code>/api/*</code>.</p>")
+			fmt.Fprint(w, "<h1>Mandate API is running</h1><p>The web UI is not built. Run <code>cd web && npm install && npm run build</code>, restart the server, or use the API at <code>/api/*</code>.</p>")
 			return
 		}
 		p := filepath.Join(dir, filepath.Clean("/"+r.URL.Path))

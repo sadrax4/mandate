@@ -178,7 +178,16 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 	if pr.Status == "rejected_by_policy" {
 		return "The mandate blocked the final cart; please adjust the budget or the rules.", nil
 	}
-	final := fmt.Sprintf("I propose %s. The cart passed every mandate check and now waits for your approval (%s).", strings.Join(names, " and "), pr.Status)
+	outcome := "now waits for your approval"
+	switch pr.Status {
+	case "auto_approved":
+		outcome = "is under the auto-approve threshold, so it goes straight to PayPal checkout"
+	case "approved":
+		outcome = "is approved; PayPal checkout is next"
+	case "paid":
+		outcome = "has been paid with the PayPal account saved on this mandate"
+	}
+	final := fmt.Sprintf("I propose %s. The cart passed every mandate check and %s.", strings.Join(names, " and "), outcome)
 	emit(Event{Type: "assistant", Message: final})
 	return final, nil
 }

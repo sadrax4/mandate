@@ -84,6 +84,16 @@ type Server struct {
 type inflightOrder struct {
 	mandateID string
 	amount    float64
+	done      chan struct{} // closed when the order exists (or creation failed)
+}
+
+// finishInflight forgets an in-flight order and wakes any approval waiting
+// for it. Call with payMu held.
+func (s *Server) finishInflight(proposalID string) {
+	if in, ok := s.inflight[proposalID]; ok {
+		delete(s.inflight, proposalID)
+		close(in.done)
+	}
 }
 
 // New wires the handlers.
@@ -560,6 +570,25 @@ func (e *httpError) Error() string { return e.msg }
 // createPayment turns an approved proposal into a PayPal order and reserves
 // the budget. It is used by the approve endpoint and by auto-approval.
 func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.Payment, error) {
+	// A second approval of a proposal whose order is being created right now
+	// (a double click, two tabs) waits for that order instead of failing.
+	for attempt := 0; ; attempt++ {
+		s.payMu.Lock()
+		in, busy := s.inflight[proposalID]
+		s.payMu.Unlock()
+		if !busy {
+			break
+		}
+		if attempt == 3 {
+			return nil, &httpError{409, "an order is being created for this proposal; try again in a moment"}
+		}
+		select {
+		case <-in.done:
+		case <-ctx.Done():
+			return nil, &httpError{499, "request cancelled"}
+		}
+	}
+
 	// Phase 1, under payMu: validate, re-check the mandate, reserve the budget
 	// and mark the proposal as approved with the order still pending, so a
 	// concurrent approval cannot reserve twice.
@@ -569,7 +598,7 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		s.payMu.Unlock()
 		return nil, &httpError{404, "proposal not found"}
 	}
-	if _, busy := s.inflight[p.ID]; busy {
+	if _, busy := s.inflight[p.ID]; busy { // it started again between the check and the lock
 		s.payMu.Unlock()
 		return nil, &httpError{409, "an order is being created for this proposal; try again in a moment"}
 	}
@@ -605,7 +634,6 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		s.st.AddEvent(p.MissionID, "policy_block", "approval refused: the cart no longer passes the mandate", map[string]any{"decision": d})
 		return nil, &httpError{409, "the cart no longer passes the mandate: " + firstViolation(d)}
 	}
-	prevStatus := p.Status
 	// Reserve now so concurrent approvals see the budget move: the in-flight
 	// entry counts in every recompute until the payment row replaces it.
 	// The cleanup is registered first, so a panic anywhere after it can
@@ -618,11 +646,11 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		if !locked {
 			s.payMu.Lock()
 		}
-		delete(s.inflight, p.ID)
+		s.finishInflight(p.ID)
 		s.recomputeReserved(md.ID)
 		s.payMu.Unlock()
 	}()
-	s.inflight[p.ID] = inflightOrder{mandateID: md.ID, amount: d.Total}
+	s.inflight[p.ID] = inflightOrder{mandateID: md.ID, amount: d.Total, done: make(chan struct{})}
 	s.recomputeReserved(md.ID)
 	items := make([]paypal.OrderItem, 0, len(p.Cart.Items))
 	for _, it := range p.Cart.Items {
@@ -690,7 +718,9 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	s.payMu.Lock()
 	defer s.payMu.Unlock()
 	booked = true // from here the deferred cleanup stays out of the way
-	delete(s.inflight, p.ID)
+	// The row written below carries the reservation from here on; waiters
+	// woken now still queue on payMu until this bookkeeping is done.
+	s.finishInflight(p.ID)
 	// The row never reads COMPLETED before the capture is booked below.
 	initial := order.Status
 	if initial == store.PaymentCompleted {
@@ -734,20 +764,12 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	}
 	s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s) with the PayPal account saved on this mandate; %s", order.ID, d.Total, md.Currency, s.pp.Mode(), what), map[string]any{"order_id": order.ID, "status": order.Status, "vaulted": true})
 	if cerr != nil {
-		// Undo the approval so the human can approve again; the next attempt goes
-		// through checkout. The order is given up (final): a late capture of it
-		// is still booked by markPaidLocked, but never captured on purpose.
-		s.releaseReservation(pay.ID)
-		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = store.PaymentCancelled })
-		_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) { pr.Status = prevStatus; pr.OrderID = ""; pr.DecidedAt = nil })
-		_, _ = s.st.UpdateMission(p.MissionID, func(m *store.Mission) {
-			m.OrderID = ""
-			if prevStatus == store.ProposalPending {
-				m.Status = store.MissionAwaitingApproval
-			}
-		})
+		// Hand the proposal back so the human can approve again; the next
+		// attempt goes through checkout. The order is given up (final): a late
+		// capture of it is still booked by markPaidLocked, never captured on
+		// purpose.
+		s.declineCapture(pay.ID, "the saved PayPal account could not be charged ("+truncate(cerr.Error(), 160)+"); reservation released")
 		s.forgetSavedPayment(md.ID, p.MissionID, "capture with the saved PayPal account failed ("+truncate(cerr.Error(), 160)+")")
-		s.st.AddEvent(p.MissionID, "error", "the saved PayPal account could not be charged; approve again to pay through PayPal checkout", nil)
 		return nil, &httpError{502, "the saved PayPal account could not be charged; approve again to pay through PayPal checkout"}
 	}
 	if final.Status == store.PaymentCompleted {
@@ -815,35 +837,13 @@ func (s *Server) recomputeAllReserved() {
 // voidPayment records that an order will never be captured (buyer cancelled,
 // order expired, human withdrew approval) and releases its reservation.
 // Call with payMu held. Returns false if the payment is already final.
-func (s *Server) voidPayment(payID, status, event, message string, reapprovable ...bool) bool {
-	pay, err := s.st.GetPayment(payID)
-	if err != nil || store.IsFinalPayment(pay.Status) {
+func (s *Server) voidPayment(payID, status, event, message string) bool {
+	pay, ok := s.releaseOrder(payID, status, event, message, false)
+	if !ok {
 		return false
 	}
-	s.releaseReservation(payID)
-	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) { x.Status = status })
-	s.st.AddEvent(pay.MissionID, event, message, map[string]any{"order_id": payID, "status": status})
 	if pr, err := s.st.GetProposal(pay.ProposalID); err != nil || pr.OrderID != payID {
 		return true // the proposal has moved on to another order; only this row changes
-	}
-	if len(reapprovable) > 0 && reapprovable[0] {
-		// The charge failed through no choice of the human: hand the proposal
-		// back so they can approve it again and pay through a fresh checkout.
-		_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) {
-			if pr.Status == store.ProposalApproved || pr.Status == store.ProposalAutoApproved {
-				pr.Status, pr.OrderID, pr.DecidedAt = store.ProposalPending, "", nil
-			}
-		})
-		_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) {
-			if m.OrderID == payID {
-				m.OrderID = ""
-				if m.Status == store.MissionAwaitingPayment {
-					m.Status = store.MissionAwaitingApproval
-				}
-			}
-		})
-		s.st.AddEvent(pay.MissionID, "payment", "the charge did not go through; approve the cart again to pay through a new PayPal checkout", map[string]any{"order_id": payID})
-		return true
 	}
 	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) {
 		if pr.Status == store.ProposalApproved || pr.Status == store.ProposalAutoApproved || pr.Status == store.ProposalPending {
@@ -857,6 +857,80 @@ func (s *Server) voidPayment(payID, status, event, message string, reapprovable 
 	})
 	s.shopper.Forget(pay.MissionID)
 	return true
+}
+
+// releaseOrder marks an uncaptured order final and gives its reservation
+// back. It refuses rows that are already final, and rows whose capture is
+// pending at PayPal unless the caller is reporting that very capture's
+// outcome (allowPending). Call with payMu held.
+func (s *Server) releaseOrder(payID, status, event, message string, allowPending bool) (*store.Payment, bool) {
+	pay, err := s.st.GetPayment(payID)
+	if err != nil || store.IsFinalPayment(pay.Status) || (store.IsCaptured(pay.Status) && !allowPending) {
+		return nil, false
+	}
+	s.releaseReservation(payID)
+	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) { x.Status = status })
+	s.st.AddEvent(pay.MissionID, event, message, map[string]any{"order_id": payID, "status": status})
+	return pay, true
+}
+
+// declineCapture records that PayPal refused the capture (declined, failed
+// or denied, including a pending one that bounced): the reservation goes
+// back and the proposal is handed back to the human, who can approve it
+// again and pay through a fresh checkout. Call with payMu held.
+func (s *Server) declineCapture(payID, message string) bool {
+	pay, ok := s.releaseOrder(payID, store.PaymentDenied, "cancelled", message, true)
+	if !ok {
+		return false
+	}
+	if pr, err := s.st.GetProposal(pay.ProposalID); err != nil || pr.OrderID != payID {
+		return true
+	}
+	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) {
+		if pr.Status == store.ProposalApproved || pr.Status == store.ProposalAutoApproved {
+			pr.Status, pr.OrderID, pr.DecidedAt = store.ProposalPending, "", nil
+		}
+	})
+	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) {
+		if m.OrderID == payID {
+			m.OrderID = ""
+			if m.Status == store.MissionAwaitingPayment {
+				m.Status = store.MissionAwaitingApproval
+			}
+		}
+	})
+	s.st.AddEvent(pay.MissionID, "payment", "the charge did not go through; approve the cart again to pay through a new PayPal checkout", map[string]any{"order_id": payID})
+	return true
+}
+
+// captureOrReconcile captures an approved order. When PayPal refuses because
+// the order was already captured (a webhook or a second tab got there
+// first), the order is re-read so the caller books what PayPal did.
+func (s *Server) captureOrReconcile(ctx context.Context, orderID string) (*paypal.Order, error) {
+	order, err := s.pp.CaptureOrder(ctx, orderID)
+	if err == nil {
+		return order, nil
+	}
+	if cur, gerr := s.pp.GetOrder(ctx, orderID); gerr == nil && cur.Status == store.PaymentCompleted {
+		return cur, nil
+	}
+	return nil, err
+}
+
+// returnOutcome names the banner the mission page shows after a return
+// from PayPal.
+func returnOutcome(pay *store.Payment) string {
+	switch {
+	case pay.Accounted:
+		return "completed" // captured; any refund shows in the ledger
+	case pay.Status == store.PaymentPending:
+		return "pending"
+	case pay.Status == store.PaymentDenied:
+		return "denied"
+	case pay.Status == store.PaymentCaptureFailed:
+		return "failed"
+	}
+	return strings.ToLower(pay.Status)
 }
 
 func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
@@ -880,15 +954,16 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "an order is being created for this proposal; try again in a moment")
 		return
 	}
+	// The order to withdraw: the one the proposal points at, or a live one
+	// the proposal lost track of (an approval interrupted by a crash).
 	orderID := p.OrderID
-	switch p.Status {
-	case store.ProposalPending, store.ProposalAutoApproved:
-	case store.ProposalApproved:
-		if orderID == "" {
-			if live, ok := s.st.LivePaymentFor(p.ID); ok {
-				orderID = live.ID // the proposal lost its order id (interrupted approval): withdraw the live order too
-			}
+	if orderID == "" {
+		if live, ok := s.st.LivePaymentFor(p.ID); ok {
+			orderID = live.ID
 		}
+	}
+	switch p.Status {
+	case store.ProposalPending, store.ProposalAutoApproved, store.ProposalApproved:
 		if orderID != "" {
 			pay, err := s.st.GetPayment(orderID)
 			switch {
@@ -914,12 +989,10 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 429, fmt.Sprintf("this demo allows %d agent runs per hour; please try again later", s.cfg.MaxMissionsPerHour))
 		return
 	}
-	if p.Status == store.ProposalApproved && orderID != "" {
+	if orderID != "" {
 		// An order exists but has not been captured: withdraw it. The return
 		// redirect and webhooks refuse to capture a withdrawn order.
-		s.releaseReservation(orderID)
-		_, _ = s.st.UpdatePayment(orderID, func(x *store.Payment) { x.Status = store.PaymentCancelled })
-		s.st.AddEvent(p.MissionID, "cancelled", "order "+orderID+" withdrawn before capture; reservation released", map[string]any{"order_id": orderID})
+		s.releaseOrder(orderID, store.PaymentCancelled, "cancelled", "order "+orderID+" withdrawn before capture; reservation released", false)
 	}
 	now := time.Now()
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
@@ -988,8 +1061,10 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Given up on our side: never capture it, but if PayPal captured it
-		// anyway (the buyer was mid-checkout), book the money and flag it. A
-		// failed lookup changes nothing, so it is not an error for the caller.
+		// anyway (the buyer was mid-checkout), book the money and flag it. An
+		// order PayPal no longer knows cannot have been captured; any other
+		// lookup failure means the check did not happen, which the caller
+		// should know.
 		order, err := s.pp.GetOrder(r.Context(), pay.ID)
 		var apiErr *paypal.APIError
 		switch {
@@ -1013,7 +1088,7 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if order.Status == "APPROVED" {
-		if cap, err := s.pp.CaptureOrder(r.Context(), pay.ID); err == nil {
+		if cap, err := s.captureOrReconcile(r.Context(), pay.ID); err == nil {
 			order = cap
 		} else {
 			writeErr(w, 502, "PayPal capture failed: "+err.Error())
@@ -1078,7 +1153,7 @@ func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	if !order.Captured() {
 		// Declined or failed: the order is terminal at PayPal and no money
 		// moved, so the reservation goes back (a no-op for a final row).
-		s.voidPayment(payID, store.PaymentDenied, "cancelled", "PayPal reports the capture as "+strings.ToLower(order.CaptureStatus)+"; reservation released", true)
+		s.declineCapture(payID, "PayPal reports the capture as "+strings.ToLower(order.CaptureStatus)+"; reservation released")
 		return
 	}
 	givenUp := store.IsFinalPayment(pay.Status) && pay.Status != store.PaymentCompleted && pay.Status != store.PaymentPartiallyRefunded
@@ -1176,9 +1251,7 @@ func (s *Server) markRefunded(payID, status string, amount float64, refundID str
 	}
 	if !pay.Accounted {
 		if status == store.PaymentDenied {
-			if !store.IsFinalPayment(pay.Status) {
-				s.voidPayment(payID, store.PaymentDenied, "cancelled", "PayPal denied the capture; reservation released")
-			}
+			s.declineCapture(payID, "PayPal denied the capture; reservation released")
 			return
 		}
 		for _, pr := range pay.PendingRefunds {
@@ -1297,11 +1370,10 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 				s.markPaid(pay.ID, order)
 			}
 		}
-		if cur, err := s.st.GetPayment(pay.ID); err == nil && !cur.Accounted {
-			http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=pending", http.StatusFound)
-			return
+		if cur, err := s.st.GetPayment(pay.ID); err == nil {
+			pay = cur
 		}
-		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=completed", http.StatusFound)
+		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment="+returnOutcome(pay), http.StatusFound)
 		return
 	}
 	if store.IsFinalPayment(pay.Status) {
@@ -1311,11 +1383,11 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=cancelled", http.StatusFound)
 		return
 	}
-	order, err := s.pp.CaptureOrder(r.Context(), token)
+	order, err := s.captureOrReconcile(r.Context(), token)
 	if err != nil {
 		s.st.AddEvent(pay.MissionID, "error", "PayPal capture failed: "+err.Error(), nil)
 		s.payMu.Lock()
-		if cur, err := s.st.GetPayment(pay.ID); err == nil && !store.IsFinalPayment(cur.Status) {
+		if cur, err := s.st.GetPayment(pay.ID); err == nil && !store.IsFinalPayment(cur.Status) && !store.IsCaptured(cur.Status) {
 			_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = store.PaymentCaptureFailed })
 		}
 		s.payMu.Unlock()
@@ -1334,7 +1406,7 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome := strings.ToLower(order.Status)
 	if cur, err := s.st.GetPayment(pay.ID); err == nil {
-		outcome = strings.ToLower(cur.Status) // completed, pending, denied, ...
+		outcome = returnOutcome(cur)
 	}
 	http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment="+outcome, http.StatusFound)
 }
@@ -1391,7 +1463,7 @@ func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
 		// Never capture a withdrawn, voided or expired order, nor one that is
 		// already captured or pending.
 		if !store.IsFinalPayment(pay.Status) && !store.IsCaptured(pay.Status) {
-			order, err := s.pp.CaptureOrder(r.Context(), orderID)
+			order, err := s.captureOrReconcile(r.Context(), orderID)
 			if err != nil {
 				s.st.AddEvent(pay.MissionID, "error", "capture after webhook failed: "+err.Error(), nil)
 				writeErr(w, 502, "capture failed")

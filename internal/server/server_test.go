@@ -552,7 +552,12 @@ func TestDeniedCaptureBeforeCompletionReleasesReservation(t *testing.T) {
 	if pay.Status != store.PaymentDenied || pay.Reserved || reserved != 0 {
 		t.Fatalf("denied before capture: %+v reserved=%v", pay, reserved)
 	}
-	e.waitMission(msID, store.MissionCancelled)
+	// the human can approve again and pay through a fresh checkout
+	e.waitMission(msID, store.MissionAwaitingApproval)
+	pr, _ := e.st.GetProposal(pay.ProposalID)
+	if pr.Status != store.ProposalPending || pr.OrderID != "" {
+		t.Fatalf("proposal not handed back: %+v", pr)
+	}
 }
 
 func TestSyncVoidedOrderReleasesReservation(t *testing.T) {
@@ -672,7 +677,9 @@ func TestConcurrentApprovalsReserveOnce(t *testing.T) {
 
 // payThroughMockCheckout plays the buyer: approve on the simulator page and
 // follow the redirect back to /paypal/return.
-func (e *env) payThroughMockCheckout(approveURL string) {
+// payThroughMockCheckout approves the order on the mock checkout page and
+// follows the return redirect; it returns where the app sent the buyer.
+func (e *env) payThroughMockCheckout(approveURL string) string {
 	e.t.Helper()
 	token := approveURL[strings.LastIndex(approveURL, "=")+1:]
 	r, err := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {token}, "action": {"approve"}})
@@ -685,6 +692,7 @@ func (e *env) payThroughMockCheckout(approveURL string) {
 		e.t.Fatal(err)
 	}
 	r2.Body.Close()
+	return r2.Header.Get("Location")
 }
 
 func (e *env) mandateVault(id string) string {
@@ -1444,9 +1452,16 @@ func TestPendingCaptureBooksOnlyWhenCompleted(t *testing.T) {
 		t.Fatalf("refreshed return must report pending, got %s", loc)
 	}
 	e.webhook(`{"id":"WH-appr","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"APPROVED"}}`)
+	e.webhook(`{"id":"WH-void","event_type":"CHECKOUT.ORDER.VOIDED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"VOIDED"}}`)
+	if rc, err := e.cli.Get(e.ts.URL + "/paypal/cancel?token=" + orderID); err == nil { // a stale cancel link
+		rc.Body.Close()
+	}
 	e.post("/api/payments/"+orderID+"/sync", nil, &rj)
 	if cur, _ := e.st.GetPayment(orderID); cur.Status != store.PaymentPending || cur.Reserved != true {
-		t.Fatalf("a pending capture must survive a reload, a webhook and a status check: %+v", cur)
+		t.Fatalf("a pending capture must survive a reload, webhooks, a cancel link and a status check: %+v", cur)
+	}
+	if ms, _ := e.st.GetMission(msID); ms.Status != store.MissionAwaitingPayment {
+		t.Fatalf("mission must still await the payment, got %s", ms.Status)
 	}
 	// PayPal completes the capture later and says so
 	e.pp.SetCaptureStatus(orderID, "COMPLETED")
@@ -1466,7 +1481,9 @@ func TestParkedFullRefundLeavesProposalRefunded(t *testing.T) {
 	e.refundWebhook(orderID, "R-full", "REFUNDED", fmt.Sprintf("%.2f", pay.Amount))
 	var out map[string]any
 	e.get("/api/missions/"+msID, &out)
-	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	if loc := e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string)); !strings.HasSuffix(loc, "?payment=completed") {
+		t.Fatalf("the buyer must see that the capture happened, got %s", loc)
+	}
 	e.waitMission(msID, store.MissionRefunded)
 	pay, _ = e.st.GetPayment(orderID)
 	pr, _ := e.st.GetProposal(pay.ProposalID)
@@ -1573,18 +1590,7 @@ func TestDeclinedCheckoutCaptureHandsTheProposalBack(t *testing.T) {
 	var out map[string]any
 	e.get("/api/missions/"+msID, &out)
 	e.pp.NextCaptureStatus = "DECLINED"
-	token := orderID
-	r, err := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {token}, "action": {"approve"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Body.Close()
-	r2, err := e.cli.Get(r.Header.Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if loc := r2.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=denied") {
+	if loc := e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string)); !strings.HasSuffix(loc, "?payment=denied") {
 		t.Fatalf("declined capture must land on the denied banner, got %s", loc)
 	}
 	pay, _ := e.st.GetPayment(orderID)
@@ -1637,5 +1643,83 @@ func TestSyncOfAGivenUpOrderUnknownToPayPal(t *testing.T) {
 	var out map[string]any
 	if code := e.post("/api/payments/"+orderID+"/sync", nil, &out); code != 200 {
 		t.Fatalf("a 404 at PayPal is not an error for a given-up row: %d %v", code, out)
+	}
+}
+
+func TestPendingCaptureThatBouncesHandsTheProposalBack(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.pp.NextCaptureStatus = "PENDING"
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	pay, _ := e.st.GetPayment(orderID)
+	e.pp.SetCaptureStatus(orderID, "DECLINED")
+	e.webhook(`{"id":"WH-denied","event_type":"PAYMENT.CAPTURE.DENIED","resource_type":"capture","resource":{"id":"` + pay.CaptureID + `","status":"DECLINED","supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`)
+	pay, _ = e.st.GetPayment(orderID)
+	pr, _ := e.st.GetProposal(pay.ProposalID)
+	ms, _ := e.st.GetMission(msID)
+	_, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentDenied || reserved != 0 || pr.Status != store.ProposalPending || ms.Status != store.MissionAwaitingApproval {
+		t.Fatalf("bounced capture: pay=%s reserved=%v proposal=%s mission=%s", pay.Status, reserved, pr.Status, ms.Status)
+	}
+}
+
+func TestReturnAfterTheWebhookCapturedFirst(t *testing.T) {
+	// The CHECKOUT.ORDER.APPROVED webhook captured the order before the
+	// buyer's browser came back; PayPal refuses the second capture and the
+	// return handler must book what PayPal did instead of reporting failure.
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	_, _ = e.pp.Approve(orderID, true)
+	e.webhook(`{"id":"WH-appr","event_type":"CHECKOUT.ORDER.APPROVED","resource_type":"checkout-order","resource":{"id":"` + orderID + `","status":"APPROVED"}}`)
+	e.waitMission(msID, store.MissionPaid)
+	// the webhook is what booked it; now the browser arrives
+	_, _ = e.st.UpdatePayment(orderID, func(x *store.Payment) { x.Status = "APPROVED"; x.Accounted = false; x.CaptureID = "" })
+	_, _ = e.st.UpdateMission(msID, func(m *store.Mission) { m.Status = store.MissionAwaitingPayment })
+	_ = e.st.UpdateMandate(mdID, func(m *mandate.Mandate) error { m.Spent = 0; return nil })
+	r, err := e.cli.Get(e.ts.URL + "/paypal/return?token=" + orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); !strings.HasSuffix(loc, "?payment=completed") {
+		t.Fatalf("return after a webhook capture must report completed, got %s", loc)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	if !pay.Accounted || pay.Status != store.PaymentCompleted {
+		t.Fatalf("not reconciled: %+v", pay)
+	}
+}
+
+func TestRejectWithdrawsTheLiveOrderOfAPendingProposal(t *testing.T) {
+	// Crash window: the order row was written, the proposal update was not.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	msID, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	_, _ = e.st.UpdateProposal(pid, func(p *store.Proposal) { p.Status = store.ProposalPending; p.OrderID = "" })
+	_, _ = e.st.UpdateMission(msID, func(m *store.Mission) { m.Status = store.MissionAwaitingApproval; m.OrderID = "" })
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "no"}, &rj); code != 200 {
+		t.Fatalf("reject: %d %v", code, rj)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	_, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentCancelled || pay.Reserved || reserved != 0 {
+		t.Fatalf("orphaned order must be withdrawn: %+v reserved=%v", pay, reserved)
+	}
+	// and the buyer's late return never captures it
+	r, err := e.cli.Get(e.ts.URL + "/paypal/return?token=" + orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if pay, _ = e.st.GetPayment(orderID); pay.Status != store.PaymentCancelled {
+		t.Fatalf("withdrawn order captured: %+v", pay)
 	}
 }

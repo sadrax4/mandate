@@ -632,11 +632,18 @@ func (st *Store) reservedTotals() map[string]float64 {
 	return totals
 }
 
-// SumReserved is the total still reserved by the mandate's payment rows.
+// SumReserved is the total still reserved by one mandate's payment rows
+// (the same rule as reservedTotals, without building every total).
 func (st *Store) SumReserved(mandateID string) float64 {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
-	return st.reservedTotals()[mandateID]
+	total := 0.0
+	for _, p := range st.s.Payments {
+		if p.MandateID == mandateID && p.Reserved {
+			total += p.Amount
+		}
+	}
+	return total
 }
 
 // ReservedTotals returns every mandate's reserved total in one pass.

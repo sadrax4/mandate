@@ -65,7 +65,7 @@ export default function MandateForm() {
           </label>
           <div className="field-row">
             <label className="field">
-              <span>Total budget (USD)</span>
+              <span>Total budget ({config?.currency || 'USD'})</span>
               <input type="number" min="1" step="0.01" value={budget} onChange={(e) => setBudget(e.target.value)} required />
             </label>
             <label className="field">

@@ -8,7 +8,8 @@ import { StandingOrderButtons } from './Dashboard'
 import { useConfig } from '../config'
 import { NegotiationCard } from '../components/Negotiation'
 
-const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'negotiation', 'message']
+// Every event type the server emits (named SSE events need a listener each).
+const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'mcp_tool_call', 'mcp_tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'suggestion', 'negotiation']
 const FIELD_LABEL: Record<string, string> = {
   total_budget: 'total budget',
   max_per_item: 'per-item cap',
@@ -49,7 +50,7 @@ const CHECK_LABEL: Record<string, string> = {
   min_rating: 'meets minimum rating',
 }
 const ICON: Record<string, string> = {
-  status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
+  status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', mcp_tool_call: '⇄', mcp_tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
   error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒', suggestion: '💡', negotiation: '🤝',
 }
 
@@ -58,7 +59,9 @@ type Candidate = Product & { query: string }
 export default function MissionPage({ id, params }: { id: string; params: URLSearchParams }) {
   const [detail, setDetail] = useState<MissionDetail | null>(null)
   const [events, setEvents] = useState<Event[]>([])
-  const [err, setErr] = useState('')
+  // loadErr comes and goes with refreshes; actionErr (approve, reject, ...) stays until the next action.
+  const [loadErr, setLoadErr] = useState('')
+  const [actionErr, setActionErr] = useState('')
   const [busy, setBusy] = useState('')
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
@@ -73,9 +76,9 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         setDetail(d)
         statusRef.current = d.mission.status
         setEvents((prev) => mergeEvents(prev, d.events ?? []))
-        setErr('')
+        setLoadErr('')
       })
-      .catch((e) => setErr(e.message))
+      .catch((e) => setLoadErr(e.message))
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -104,10 +107,25 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
+  // Follow the log while the agent works; a finished mission opens at the top so the story reads in order.
   useEffect(() => {
     const el = timelineRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && statusRef.current === 'running') el.scrollTop = el.scrollHeight
   }, [events.length])
+
+  // Coming back from PayPal with the browser's back button can restore this page from
+  // the cache with "Creating PayPal order…" still showing: clear it.
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) {
+        setBusy('')
+        refresh()
+      }
+    }
+    window.addEventListener('pageshow', onShow)
+    return () => window.removeEventListener('pageshow', onShow)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
 
   const proposals = detail?.proposals ?? []
   const latest: Proposal | undefined = proposals[proposals.length - 1]
@@ -163,6 +181,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const approve = async () => {
     if (!latest) return
     setBusy('approve')
+    setActionErr('')
     try {
       const r = await api.approve(latest.id)
       if (r.approve_url) {
@@ -173,20 +192,21 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
       await refresh()
       setBusy('')
     } catch (e: any) {
-      setErr(e.message)
+      setActionErr(e.message)
       setBusy('')
     }
   }
   const reject = async () => {
     if (!latest) return
     setBusy('reject')
+    setActionErr('')
     try {
       await api.reject(latest.id, reason.trim() || 'rejected without a reason')
       setRejecting(false)
       setReason('')
       await refresh()
     } catch (e: any) {
-      setErr(e.message)
+      setActionErr(e.message)
     } finally {
       setBusy('')
     }
@@ -195,11 +215,12 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const applySuggestion = async () => {
     if (!mission) return
     setBusy('apply')
+    setActionErr('')
     try {
       const r = await api.applySuggestion(mission.id)
       navigate(`#/missions/${r.mission.id}`)
     } catch (e: any) {
-      setErr(e.message)
+      setActionErr(e.message)
     } finally {
       setBusy('')
     }
@@ -208,18 +229,20 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   const sync = async () => {
     if (!payment) return
     setBusy('sync')
+    setActionErr('')
     try {
       await api.syncPayment(payment.id)
       await refresh()
     } catch (e: any) {
-      setErr(e.message)
+      setActionErr(e.message)
     } finally {
       setBusy('')
     }
   }
 
   const banner = params.get('payment')
-  if (!detail || !mission) return <div className="page">{err ? <div className="alert bad">{err}</div> : <Empty>Loading mission…</Empty>}</div>
+  if (!detail || !mission) return <div className="page">{loadErr ? <div className="alert bad">{loadErr}</div> : <Empty>Loading mission…</Empty>}</div>
+  const visibleEvents = events.filter((ev) => ev.type !== 'tool_result' || ev.data?.error)
 
   const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status) && !isCaptured(payment.status)
   const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'
@@ -252,17 +275,16 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
           </div>
         </div>
       </div>
-      {err && <div className="alert bad">{err}</div>}
+      {actionErr && <div className="alert bad">{actionErr}</div>}
+      {loadErr && <div className="alert bad">Could not refresh this mission: {loadErr}</div>}
 
       <div className="two-col">
-        <Card title="Agent activity" action={mission.status === 'running' ? <Pill status="running">working…</Pill> : <span className="muted">{events.length} events</span>}>
+        <Card title="Agent activity" action={mission.status === 'running' ? <Pill status="running">working…</Pill> : <span className="muted">{visibleEvents.length} {visibleEvents.length === 1 ? 'event' : 'events'}</span>}>
           <div className="timeline" ref={timelineRef}>
-            {events.length === 0 && <Empty>Waiting for the agent…</Empty>}
-            {events
-              .filter((ev) => ev.type !== 'tool_result' || ev.data?.error)
-              .map((ev) => (
-                <EventRow key={ev.id} ev={ev} />
-              ))}
+            {visibleEvents.length === 0 && <Empty>Waiting for the agent…</Empty>}
+            {visibleEvents.map((ev) => (
+              <EventRow key={ev.id} ev={ev} />
+            ))}
           </div>
         </Card>
 
@@ -362,7 +384,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
               )}
               {canDecide && rejecting && (
                 <div className="reject-box">
-                  <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Tell the agent what to change, e.g. 'too expensive, stay under $80' or 'I need wireless'" />
+                  <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} aria-label="Feedback for the agent" placeholder="Tell the agent what to change, e.g. 'too expensive, stay under $80' or 'I need wireless'" />
                   <div className="actions" style={{ justifyContent: 'flex-start' }}>
                     <button className="btn danger" onClick={reject} disabled={busy !== ''}>{busy === 'reject' ? 'Sending…' : 'Send back to the agent'}</button>
                     <button className="btn ghost" onClick={() => setRejecting(false)}>Cancel</button>
@@ -402,17 +424,17 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <dt>Checkout</dt>
                 <dd>{payment.vaulted ? 'none: paid with the PayPal account saved on this mandate' : 'PayPal checkout, approved by the buyer'}</dd>
               </dl>
-              {payment.approve_url && !isFinalPayment(payment.status) && !isCaptured(payment.status) && (
+              {!isFinalPayment(payment.status) && (payment.approve_url || payment.status === 'PENDING') && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
-                  <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>
+                  {/* the checkout link only helps while the buyer has not approved yet, or after a declined attempt that PayPal lets them retry */}
+                  {payment.approve_url && !isCaptured(payment.status) && payment.status !== 'APPROVED' && <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>}
                   <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
-                  <span className="muted">{payment.mode === 'mock' ? 'Simulated checkout page' : config?.demo_buyer_hint ? `Sandbox buyer for testing: ${config.demo_buyer_hint}` : 'Log in with a sandbox buyer account'}</span>
-                </div>
-              )}
-              {payment.status === 'PENDING' && (
-                <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
-                  <button className="btn ghost" onClick={sync} disabled={busy !== ''}>{busy === 'sync' ? 'Checking…' : 'Check status with PayPal'}</button>
-                  <span className="muted">The capture is pending at PayPal; it is booked automatically once it completes.</span>
+                  <span className="muted">
+                    {payment.status === 'PENDING'
+                      ? 'The capture is pending at PayPal; it is booked automatically once it completes.'
+                      : payment.status === 'APPROVED' ? 'The buyer approved at PayPal; check the status to capture.'
+                      : payment.mode === 'mock' ? 'Simulated checkout page' : config?.demo_buyer_hint ? `Sandbox buyer for testing: ${config.demo_buyer_hint}` : 'Log in with a sandbox buyer account'}
+                  </span>
                 </div>
               )}
             </Card>
@@ -450,7 +472,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
         className="mt"
         action={
           <span className="muted">
-            {candidates.length} products{candidates[0]?.source === 'channel3' ? ' · live retail data via Channel3 (links open the merchant page)' : candidates[0]?.source === 'mock' ? ' · built-in demo catalog' : ''} · highlighted rows are in the proposed cart
+            {candidates.length} {candidates.length === 1 ? 'product' : 'products'}{candidates[0]?.source === 'channel3' ? ' · live retail data via Channel3 (links open the merchant page)' : candidates[0]?.source === 'mock' ? ' · built-in demo catalog' : ''} · highlighted rows are in the proposed cart
           </span>
         }
       >
@@ -504,7 +526,7 @@ function EventRow({ ev }: { ev: Event }) {
     <div className={`ev ev-${ev.type}`}>
       <div className="ico">{ICON[ev.type] ?? '•'}</div>
       <div className="body">
-        <div className="msg md">{ev.type === 'assistant' ? <Markdown text={msg} /> : msg}</div>
+        <div className={ev.type === 'assistant' ? 'msg md' : 'msg'}>{ev.type === 'assistant' ? <Markdown text={msg} /> : msg}</div>
         {detailsNode}
         <div className="meta">{label(ev.type)} · {time}</div>
       </div>

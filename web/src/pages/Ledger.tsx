@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, GridApi } from 'ag-grid-community'
-import { api, label, money, type AskResult, type LedgerRow } from '../api'
+import { api, isFinalPayment, label, money, statusCellClass, type AskResult, type LedgerRow } from '../api'
 import { useConfig } from '../config'
 import { Grid } from '../components/Grid'
 import { Markdown } from '../components/Markdown'
@@ -45,11 +45,14 @@ export default function Ledger() {
 
   const totals = useMemo(() => {
     const completed = rows.filter((r) => r.status === 'COMPLETED' || r.status === 'PARTIALLY_REFUNDED')
+    // open: PayPal has not taken the money yet (waiting for the buyer, a retry, or a pending capture)
+    const open = rows.filter((r) => !isFinalPayment(r.status) || r.status === 'PENDING')
     return {
       count: rows.length,
       completed: completed.length,
       paid: completed.reduce((s, r) => s + r.amount - (r.refunded ?? 0), 0),
-      pending: rows.filter((r) => r.status === 'PAYER_ACTION_REQUIRED' || r.status === 'CREATED' || r.status === 'APPROVED').reduce((s, r) => s + r.amount, 0),
+      open: open.reduce((s, r) => s + r.amount, 0),
+      openCount: open.length,
     }
   }, [rows])
 
@@ -60,12 +63,12 @@ export default function Ledger() {
       { field: 'goal', headerName: 'Mission goal', minWidth: 260, flex: 2 },
       { field: 'items', headerName: 'Items', maxWidth: 90, filter: 'agNumberColumnFilter' },
       { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: 110 },
-      { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => `cell-status cell-${p.value}`, minWidth: 140 },
-      { field: 'id', headerName: 'PayPal order', minWidth: 190 },
-      { field: 'capture_id', headerName: 'Capture', minWidth: 170 },
-      { field: 'payer_email', headerName: 'Payer', minWidth: 190 },
-      { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 120 },
-      { field: 'mode', headerName: 'Mode', maxWidth: 100 },
+      { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 130 },
+      { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 110 },
+      { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id' },
+      { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
+      { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: true },
+      { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: true },
     ],
     [],
   )
@@ -82,7 +85,7 @@ export default function Ledger() {
         <div className="stat"><b>{totals.count}</b><span>orders</span></div>
         <div className="stat"><b>{totals.completed}</b><span>completed</span></div>
         <div className="stat"><b>{money(totals.paid, config?.currency)}</b><span>captured</span></div>
-        <div className="stat"><b>{money(totals.pending, config?.currency)}</b><span>awaiting buyer</span></div>
+        <div className="stat"><b>{money(totals.open, config?.currency)}</b><span>{totals.openCount === 1 ? 'open order' : 'open orders'}, not yet captured</span></div>
       </div>
       {err && <div className="alert bad">{err}</div>}
       <Card
@@ -111,6 +114,7 @@ export default function Ledger() {
             paginationPageSize={25}
           />
         )}
+        {rows.length > 0 && <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Payer and environment columns are hidden by default: open a column menu to show them. Click a row to open its mission.</p>}
       </Card>
 
       {mcp?.enabled && (

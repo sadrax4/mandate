@@ -14,7 +14,8 @@ const DEMO_GOALS: { goal: string; note?: string; kind?: string }[] = [
 export default function Dashboard() {
   const [mandates, setMandates] = useState<Mandate[]>([])
   const [missions, setMissions] = useState<Mission[]>([])
-  const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState('')
   const config = useConfig()
   const [showAll, setShowAll] = useState(false)
@@ -34,14 +35,15 @@ export default function Dashboard() {
     }
   }
 
+  // loadError comes and goes with the 4-second poll; actionError stays until the next action.
   const load = () =>
     Promise.all([api.mandates(), api.missions()])
       .then(([m, ms]) => {
         setMandates(m)
         setMissions(ms)
-        setError('')
+        setLoadError('')
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => setLoadError(e.message))
 
   useEffect(() => {
     load()
@@ -52,8 +54,10 @@ export default function Dashboard() {
   const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
   const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
+  const hasDemo = mandates.some((m) => m.name === 'Desk refresh')
   const createDemo = async () => {
     setBusy('demo')
+    setActionError('')
     try {
       await api.createMandate({
         name: 'Desk refresh',
@@ -68,7 +72,7 @@ export default function Dashboard() {
       })
       await load()
     } catch (e: any) {
-      setError(e.message)
+      setActionError(e.message)
     } finally {
       setBusy('')
     }
@@ -82,13 +86,14 @@ export default function Dashboard() {
           <p className="lede">A mandate is the authority you give the agent: a budget, caps and rules. Start a mission under a mandate and the agent researches, compares and proposes. You approve. PayPal pays.</p>
         </div>
         <div className="actions">
-          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
-            {busy === 'demo' ? 'Creating…' : 'Create demo mandate'}
+          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo' || hasDemo} title={hasDemo ? 'The demo mandate "Desk refresh" already exists below' : undefined}>
+            {busy === 'demo' ? 'Creating…' : hasDemo ? 'Demo mandate created' : 'Create demo mandate'}
           </button>
           <a className="btn primary" href="#/mandates/new">New mandate</a>
         </div>
       </div>
-      {error && <div className="alert bad">{error}</div>}
+      {actionError && <div className="alert bad">{actionError}</div>}
+      {loadError && <div className="alert bad">Could not load the dashboard: {loadError}</div>}
 
       {!guideHidden && (
         <div className="guide">
@@ -108,6 +113,7 @@ export default function Dashboard() {
 
       {missions.some((ms) => ms.status === 'awaiting_approval') && (
         <Card title="Needs your approval" className="mt-0" action={<span className="muted">the agent proposed; nothing moves until you decide</span>}>
+          <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -128,6 +134,7 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -152,6 +159,7 @@ export default function Dashboard() {
 
       {missions.some((ms) => (ms.repeat_days ?? 0) > 0) && (
         <Card title="Standing orders" className="mt" action={<span className="muted">goals the agent re-runs on a schedule, always inside the mandate</span>}>
+          <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -179,6 +187,7 @@ export default function Dashboard() {
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -186,6 +195,7 @@ export default function Dashboard() {
         {missions.length === 0 ? (
           <Empty>No missions yet.</Empty>
         ) : (
+          <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -198,7 +208,7 @@ export default function Dashboard() {
             <tbody>
               {missions.slice(0, 20).map((ms) => (
                 <tr key={ms.id} className="row-link" onClick={() => navigate(`#/missions/${ms.id}`)}>
-                  <td>{ms.goal}</td>
+                  <td><a href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>{ms.goal}</a></td>
                   <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
                   <td><Pill status={ms.status} /></td>
                   <td className="muted">{new Date(ms.updated_at).toLocaleString()}</td>
@@ -206,6 +216,7 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </Card>
     </div>

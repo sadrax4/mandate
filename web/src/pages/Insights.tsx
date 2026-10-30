@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, ColGroupDef, GridApi } from 'ag-grid-community'
 import { AgCharts } from 'ag-charts-react'
 import type { AgCartesianChartOptions, AgPolarChartOptions } from 'ag-charts-community'
-import { api, label, money, type InsightItem, type Insights } from '../api'
+import { api, label, money, statusCellClass, type InsightItem, type Insights } from '../api'
 import { Grid, usePrefersDark } from '../components/Grid'
 import { Card, Empty, navigate } from '../components/ui'
 
@@ -100,12 +100,12 @@ export default function InsightsPage() {
       {
         headerName: 'Order',
         children: [
-          { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => `cell-status cell-${p.value}`, minWidth: 130, filter: 'agTextColumnFilter', floatingFilter: true },
+          { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 130, filter: 'agTextColumnFilter', floatingFilter: true },
           { field: 'paid_via', headerName: 'Paid via', minWidth: 120, cellClass: (p) => (p.value === 'saved PayPal' ? 'cell-via-saved' : '') },
           { field: 'mandate', headerName: 'Mandate', minWidth: 130, filter: 'agTextColumnFilter', floatingFilter: true },
           { field: 'goal', headerName: 'Mission goal', minWidth: 220, flex: 2, tooltipField: 'goal' },
-          { field: 'order_id', headerName: 'PayPal order', minWidth: 180 },
-          { field: 'capture_id', headerName: 'Capture', minWidth: 170 },
+          { field: 'order_id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'order_id' },
+          { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id', hide: true },
           { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
         ],
       },

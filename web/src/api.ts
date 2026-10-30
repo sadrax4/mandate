@@ -199,7 +199,6 @@ export const api = {
   config: () => req<Config>('/api/config'),
   categories: () => req<string[]>('/api/categories'),
   mandates: () => req<Mandate[]>('/api/mandates'),
-  mandate: (id: string) => req<{ mandate: Mandate; missions: Mission[] }>(`/api/mandates/${id}`),
   createMandate: (m: Partial<Mandate>) => req<Mandate>('/api/mandates', { method: 'POST', body: JSON.stringify(m) }),
   missions: () => req<Mission[]>('/api/missions'),
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
@@ -263,6 +262,9 @@ export const CAPTURED_PAYMENT_STATUSES = ['COMPLETED', 'PARTIALLY_REFUNDED', 'PE
 export const isCaptured = (s: string) => CAPTURED_PAYMENT_STATUSES.includes(s)
 
 export const label = (s: string) => STATUS_LABEL[s] ?? s.replace(/_/g, ' ')
+
+/** AG Grid cell class for a status column: the same colour the pills use. */
+export const statusCellClass = (s: string) => `cell-status cell-${statusTone(s)}`
 
 export const statusTone = (s: string) => {
   switch (s) {

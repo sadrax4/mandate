@@ -27,7 +27,7 @@ services:
     depends_on:
       - mandate
     environment:
-      - DOMAIN=${DOMAIN:?set DOMAIN=your.domain}
+      - DOMAIN=${DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"

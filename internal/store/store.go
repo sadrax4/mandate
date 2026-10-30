@@ -87,7 +87,10 @@ type Payment struct {
 	Mode       string  `json:"mode"`
 	// Reserved is true while this payment holds a budget reservation on the
 	// mandate. It is cleared exactly once, on capture, cancel or void.
-	Reserved  bool      `json:"reserved"`
+	Reserved bool `json:"reserved"`
+	// Vaulted is true when the order was paid with the PayPal account saved
+	// on the mandate, without a checkout hop.
+	Vaulted   bool      `json:"vaulted"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

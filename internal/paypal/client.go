@@ -43,18 +43,33 @@ type CreateOrderRequest struct {
 	ReturnURL   string
 	CancelURL   string
 	BrandName   string
+	// StoreInVault asks PayPal to save the buyer's PayPal account when the
+	// order is captured (payment_source.paypal.attributes.vault). The buyer
+	// consents at checkout; the capture response then carries the vault id.
+	StoreInVault bool
+	// VaultID pays with a previously saved PayPal account instead of sending
+	// the buyer to checkout. The order comes back approved and can be captured
+	// straight away.
+	VaultID string
+	// RequestID overrides the PayPal-Request-Id idempotency key (defaults to
+	// CustomID). Retries that change the request body must use a new key.
+	RequestID string
 }
 
 // Order is the normalised view of a PayPal order.
 type Order struct {
-	ID         string          `json:"id"`
-	Status     string          `json:"status"`
-	ApproveURL string          `json:"approve_url,omitempty"`
-	CaptureID  string          `json:"capture_id,omitempty"`
-	Amount     float64         `json:"amount"`
-	Currency   string          `json:"currency"`
-	PayerEmail string          `json:"payer_email,omitempty"`
-	Raw        json.RawMessage `json:"-"`
+	ID         string  `json:"id"`
+	Status     string  `json:"status"`
+	ApproveURL string  `json:"approve_url,omitempty"`
+	CaptureID  string  `json:"capture_id,omitempty"`
+	Amount     float64 `json:"amount"`
+	Currency   string  `json:"currency"`
+	PayerEmail string  `json:"payer_email,omitempty"`
+	// VaultID and VaultStatus describe the saved payment method PayPal
+	// returned for this order (status VAULTED once the token is usable).
+	VaultID     string          `json:"vault_id,omitempty"`
+	VaultStatus string          `json:"vault_status,omitempty"`
+	Raw         json.RawMessage `json:"-"`
 }
 
 // Client is implemented by the real API client and the Mock.
@@ -265,22 +280,44 @@ func (r *REST) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order,
 	if brand == "" {
 		brand = "Mandate"
 	}
+	source := map[string]any{}
+	requestID := req.RequestID
+	if requestID == "" {
+		requestID = req.CustomID
+	}
+	if req.VaultID != "" {
+		// Pay with the saved account: no redirect, no buyer interaction.
+		source["vault_id"] = req.VaultID
+		if requestID != "" {
+			requestID += "-vault"
+		}
+	} else {
+		source["experience_context"] = map[string]any{
+			"brand_name":          brand,
+			"user_action":         "PAY_NOW",
+			"shipping_preference": "NO_SHIPPING",
+			"return_url":          req.ReturnURL,
+			"cancel_url":          req.CancelURL,
+		}
+		if req.StoreInVault {
+			source["attributes"] = map[string]any{
+				"vault": map[string]any{
+					"store_in_vault": "ON_SUCCESS",
+					"usage_type":     "MERCHANT",
+					"customer_type":  "CONSUMER",
+				},
+			}
+			if requestID != "" {
+				requestID += "-save"
+			}
+		}
+	}
 	body := map[string]any{
 		"intent":         "CAPTURE",
 		"purchase_units": []any{pu},
-		"payment_source": map[string]any{
-			"paypal": map[string]any{
-				"experience_context": map[string]any{
-					"brand_name":          brand,
-					"user_action":         "PAY_NOW",
-					"shipping_preference": "NO_SHIPPING",
-					"return_url":          req.ReturnURL,
-					"cancel_url":          req.CancelURL,
-				},
-			},
-		},
+		"payment_source": map[string]any{"paypal": source},
 	}
-	raw, _, err := r.do(ctx, http.MethodPost, "/v2/checkout/orders", body, req.CustomID)
+	raw, _, err := r.do(ctx, http.MethodPost, "/v2/checkout/orders", body, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -365,11 +402,27 @@ func parseOrder(raw json.RawMessage) (*Order, error) {
 		Payer struct {
 			EmailAddress string `json:"email_address"`
 		} `json:"payer"`
+		PaymentSource struct {
+			PayPal struct {
+				EmailAddress string `json:"email_address"`
+				Attributes   struct {
+					Vault struct {
+						ID     string `json:"id"`
+						Status string `json:"status"`
+					} `json:"vault"`
+				} `json:"attributes"`
+			} `json:"paypal"`
+		} `json:"payment_source"`
 	}
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return nil, fmt.Errorf("paypal: decode order: %w", err)
 	}
 	out := &Order{ID: o.ID, Status: o.Status, Raw: raw, PayerEmail: o.Payer.EmailAddress}
+	if out.PayerEmail == "" {
+		out.PayerEmail = o.PaymentSource.PayPal.EmailAddress
+	}
+	out.VaultID = o.PaymentSource.PayPal.Attributes.Vault.ID
+	out.VaultStatus = o.PaymentSource.PayPal.Attributes.Vault.Status
 	for _, l := range o.Links {
 		if l.Rel == "payer-action" || l.Rel == "approve" {
 			out.ApproveURL = l.Href

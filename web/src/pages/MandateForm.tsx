@@ -12,6 +12,7 @@ export default function MandateForm() {
   const [allowed, setAllowed] = useState<string[]>([])
   const [blocked, setBlocked] = useState('')
   const [requireApproval, setRequireApproval] = useState(false)
+  const [savePayment, setSavePayment] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -36,6 +37,7 @@ export default function MandateForm() {
         allowed_categories: allowed,
         blocked_merchants: blocked.split(',').map((s) => s.trim()).filter(Boolean),
         require_approval: requireApproval,
+        save_payment_method: savePayment,
       })
       navigate('#/')
     } catch (e: any) {
@@ -82,6 +84,13 @@ export default function MandateForm() {
           <label className="check">
             <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} />
             <span>Always require my approval, even under the auto-approve threshold</span>
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={savePayment} onChange={(e) => setSavePayment(e.target.checked)} />
+            <span>
+              Save my PayPal account at the first checkout (PayPal vault). After that, carts I approve are paid with one click and carts under the
+              auto-approve threshold are paid with no click at all, always inside this mandate.
+            </span>
           </label>
         </Card>
         <Card title="Rules" className="mt">

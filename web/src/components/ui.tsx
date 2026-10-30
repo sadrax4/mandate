@@ -46,8 +46,8 @@ export function BudgetBar({ total, spent, reserved, currency }: { total: number;
   )
 }
 
-export function Chip({ children }: { children: ReactNode }) {
-  return <span className="chip">{children}</span>
+export function Chip({ children, tone }: { children: ReactNode; tone?: 'good' | 'warn' }) {
+  return <span className={`chip${tone ? ` ${tone}` : ''}`}>{children}</span>
 }
 
 export const navigate = (hash: string) => {

@@ -533,3 +533,170 @@ func TestConcurrentApprovalsReserveOnce(t *testing.T) {
 		t.Fatalf("reserved %v, want %v", reserved, pays[0].Amount)
 	}
 }
+
+// payThroughMockCheckout plays the buyer: approve on the simulator page and
+// follow the redirect back to /paypal/return.
+func (e *env) payThroughMockCheckout(approveURL string) {
+	e.t.Helper()
+	token := approveURL[strings.LastIndex(approveURL, "=")+1:]
+	r, err := e.cli.PostForm(e.ts.URL+"/mock/paypal/approve", url.Values{"token": {token}, "action": {"approve"}})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	r.Body.Close()
+	r2, err := e.cli.Get(r.Header.Get("Location"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	r2.Body.Close()
+}
+
+func (e *env) mandateVault(id string) string {
+	var mdv map[string]any
+	e.get("/api/mandates/"+id, &mdv)
+	v, _ := mdv["mandate"].(map[string]any)["vault_id"].(string)
+	return v
+}
+
+func (e *env) pendingProposal(mandateID string) (missionID, proposalID string) {
+	e.t.Helper()
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mandateID, "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingApproval)
+	return ms["id"].(string), out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+}
+
+func TestSavedPayPalPaysApprovedCartsWithoutCheckout(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true, "vault_id": "client-cannot-set-this"}, &md)
+	mdID := md["id"].(string)
+	if e.mandateVault(mdID) != "" {
+		t.Fatal("vault id must not be settable through the API")
+	}
+
+	// First purchase goes through checkout and saves the account.
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve: %d %v", code, ap)
+	}
+	if ap["approve_url"] == "" {
+		t.Fatal("first purchase must go through checkout")
+	}
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	vault := e.mandateVault(mdID)
+	if vault == "" || !e.pp.Vaulted(vault) {
+		t.Fatalf("account not saved on the mandate (vault %q)", vault)
+	}
+	spent1, _ := e.mandateNumbers(mdID)
+
+	// Second purchase: one click, no checkout, paid at once.
+	mid2, pid2 := e.pendingProposal(mdID)
+	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve 2: %d %v", code, ap)
+	}
+	if ap["approve_url"] != "" {
+		t.Fatalf("expected no checkout, got approve_url %v", ap["approve_url"])
+	}
+	pay := ap["payment"].(map[string]any)
+	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || pay["capture_id"] == "" || pay["payer_email"] == "" {
+		t.Fatalf("payment = %v", pay)
+	}
+	out := e.waitMission(mid2, store.MissionPaid)
+	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
+		t.Fatalf("proposal not paid: %v", out["proposals"])
+	}
+	spent2, reserved := e.mandateNumbers(mdID)
+	if reserved != 0 || spent2 <= spent1 {
+		t.Fatalf("accounting: spent %v -> %v, reserved %v", spent1, spent2, reserved)
+	}
+	if e.mandateVault(mdID) != vault {
+		t.Fatal("vault id changed")
+	}
+	// approving the paid proposal again is refused
+	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 409 {
+		t.Fatalf("re-approve: %d", code)
+	}
+	var ledger []map[string]any
+	e.get("/api/ledger", &ledger)
+	if len(ledger) != 2 {
+		t.Fatalf("ledger rows = %d", len(ledger))
+	}
+}
+
+func TestSavedPayPalAutoApprovePaysDuringTheRun(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Petty cash", "total_budget": 200, "auto_approve_under": 60, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingPayment)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(ms["id"].(string), store.MissionPaid)
+	if e.mandateVault(mdID) == "" {
+		t.Fatal("account not saved")
+	}
+
+	// The next under-threshold cart is paid while the agent is still running.
+	var ms2 map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms2)
+	out = e.waitMission(ms2["id"].(string), store.MissionPaid)
+	pay := out["payments"].([]any)[0].(map[string]any)
+	if pay["vaulted"] != true || pay["status"] != "COMPLETED" {
+		t.Fatalf("payment = %v", pay)
+	}
+	if u, _ := pay["approve_url"].(string); u != "" {
+		t.Fatalf("no checkout expected, got %s", u)
+	}
+	var sawPaid bool
+	for _, ev := range out["events"].([]any) {
+		if ev.(map[string]any)["type"] == "paid" {
+			sawPaid = true
+		}
+	}
+	if !sawPaid {
+		t.Fatal("paid event missing from the mission log")
+	}
+	spent, reserved := e.mandateNumbers(mdID)
+	if reserved != 0 || spent <= 0 {
+		t.Fatalf("accounting: spent %v reserved %v", spent, reserved)
+	}
+}
+
+func TestSavedPayPalFallsBackToCheckoutWhenTokenIsGone(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	vault := e.mandateVault(mdID)
+	e.pp.Revoke(vault) // the buyer removed the permission in their PayPal account
+
+	mid2, pid2 := e.pendingProposal(mdID)
+	if code := e.post("/api/proposals/"+pid2+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve: %d %v", code, ap)
+	}
+	if ap["approve_url"] == "" {
+		t.Fatalf("expected a checkout fallback, got %v", ap)
+	}
+	if e.mandateVault(mdID) != "" {
+		t.Fatal("dead token should have been forgotten")
+	}
+	_, reserved := e.mandateNumbers(mdID)
+	if reserved <= 0 {
+		t.Fatal("fallback order should reserve the budget")
+	}
+	// paying the fallback order saves a fresh account
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid2, store.MissionPaid)
+	if v := e.mandateVault(mdID); v == "" || v == vault {
+		t.Fatalf("expected a new saved account, got %q", v)
+	}
+}

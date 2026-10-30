@@ -33,6 +33,7 @@ export default function Ledger() {
       { field: 'id', headerName: 'PayPal order', minWidth: 190 },
       { field: 'capture_id', headerName: 'Capture', minWidth: 170 },
       { field: 'payer_email', headerName: 'Payer', minWidth: 190 },
+      { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 120 },
       { field: 'mode', headerName: 'Mode', maxWidth: 100 },
     ],
     [],

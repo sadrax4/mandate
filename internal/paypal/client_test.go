@@ -175,3 +175,93 @@ func TestVerifyWebhook(t *testing.T) {
 		t.Fatalf("order event order id = %q", ev2.OrderID())
 	}
 }
+
+func TestCreateOrderVaultBodies(t *testing.T) {
+	var bodies []map[string]any
+	var requestIDs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/oauth2/token" {
+			_, _ = io.WriteString(w, `{"access_token":"t","expires_in":3600}`)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(body, &m)
+		bodies = append(bodies, m)
+		requestIDs = append(requestIDs, r.Header.Get("PayPal-Request-Id"))
+		if len(bodies) == 1 {
+			_, _ = io.WriteString(w, `{"id":"A","status":"PAYER_ACTION_REQUIRED","links":[{"rel":"payer-action","href":"https://approve"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"B","status":"APPROVED","payment_source":{"paypal":{"email_address":"buyer@example.com","attributes":{"vault":{"id":"v1","status":"VAULTED"}}}}}`)
+	}))
+	defer srv.Close()
+	c := NewREST("a", "b", srv.URL)
+	// 1. a checkout that asks PayPal to save the account
+	o, err := c.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 10, CustomID: "prop_1", ReturnURL: "https://x/return", CancelURL: "https://x/cancel", StoreInVault: true})
+	if err != nil || o.ApproveURL != "https://approve" {
+		t.Fatalf("save order: %v %+v", err, o)
+	}
+	pp := bodies[0]["payment_source"].(map[string]any)["paypal"].(map[string]any)
+	vault := pp["attributes"].(map[string]any)["vault"].(map[string]any)
+	if vault["store_in_vault"] != "ON_SUCCESS" || vault["usage_type"] != "MERCHANT" || pp["experience_context"] == nil {
+		t.Fatalf("vault attributes missing: %v", pp)
+	}
+	if requestIDs[0] != "prop_1-save" {
+		t.Fatalf("request id = %q", requestIDs[0])
+	}
+	// 2. paying with the saved account: no redirect, vault_id in the body
+	o, err = c.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 10, CustomID: "prop_2", VaultID: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pp = bodies[1]["payment_source"].(map[string]any)["paypal"].(map[string]any)
+	if pp["vault_id"] != "v1" || pp["experience_context"] != nil || pp["attributes"] != nil {
+		t.Fatalf("vault body wrong: %v", pp)
+	}
+	if requestIDs[1] != "prop_2-vault" {
+		t.Fatalf("request id = %q", requestIDs[1])
+	}
+	if o.Status != "APPROVED" || o.ApproveURL != "" || o.VaultID != "v1" || o.VaultStatus != "VAULTED" || o.PayerEmail != "buyer@example.com" {
+		t.Fatalf("parsed vault order: %+v", o)
+	}
+}
+
+func TestParseOrderCaptureWithVault(t *testing.T) {
+	raw := `{"id":"X","status":"COMPLETED","payer":{"email_address":"p@example.com"},
+	  "payment_source":{"paypal":{"attributes":{"vault":{"id":"tok","status":"VAULTED","customer":{"id":"c1"}}}}},
+	  "purchase_units":[{"amount":{"currency_code":"USD","value":"12.50"},"payments":{"captures":[{"id":"CAP1","status":"COMPLETED","amount":{"currency_code":"USD","value":"12.50"}}]}}]}`
+	o, err := parseOrder(json.RawMessage(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.CaptureID != "CAP1" || o.VaultID != "tok" || o.VaultStatus != "VAULTED" || o.PayerEmail != "p@example.com" || o.Amount != 12.5 {
+		t.Fatalf("parsed: %+v", o)
+	}
+}
+
+func TestMockVault(t *testing.T) {
+	m := NewMock("http://localhost:8080")
+	// unknown token is refused like PayPal does
+	if _, err := m.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 5, VaultID: "nope"}); err == nil {
+		t.Fatal("unknown vault id should fail")
+	}
+	o, _ := m.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 10, ReturnURL: "http://x/r", CancelURL: "http://x/c", StoreInVault: true})
+	_, _ = m.Approve(o.ID, true)
+	c, err := m.CaptureOrder(context.Background(), o.ID)
+	if err != nil || c.VaultID == "" || c.VaultStatus != "VAULTED" || !m.Vaulted(c.VaultID) {
+		t.Fatalf("capture should save the account: %v %+v", err, c)
+	}
+	o2, err := m.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 7, VaultID: c.VaultID})
+	if err != nil || o2.Status != "APPROVED" || o2.ApproveURL != "" || o2.PayerEmail == "" {
+		t.Fatalf("vault order: %v %+v", err, o2)
+	}
+	c2, err := m.CaptureOrder(context.Background(), o2.ID)
+	if err != nil || c2.Status != "COMPLETED" || c2.CaptureID == "" {
+		t.Fatalf("vault capture: %v %+v", err, c2)
+	}
+	m.Revoke(c.VaultID)
+	if _, err := m.CreateOrder(context.Background(), CreateOrderRequest{Currency: "USD", Amount: 7, VaultID: c.VaultID}); err == nil {
+		t.Fatal("revoked token should fail")
+	}
+}

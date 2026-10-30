@@ -18,20 +18,22 @@ type Mock struct {
 
 	mu     sync.Mutex
 	orders map[string]*mockOrder
+	vaults map[string]string // vault id -> payer email, like PayPal's saved payment methods
 	seq    int
 }
 
 type mockOrder struct {
 	Order
-	ReturnURL string
-	CancelURL string
-	Items     []OrderItem
-	Approved  bool
+	ReturnURL    string
+	CancelURL    string
+	Items        []OrderItem
+	Approved     bool
+	StoreInVault bool
 }
 
 // NewMock returns an empty simulator.
 func NewMock(publicURL string) *Mock {
-	return &Mock{PublicURL: strings.TrimRight(publicURL, "/"), orders: map[string]*mockOrder{}}
+	return &Mock{PublicURL: strings.TrimRight(publicURL, "/"), orders: map[string]*mockOrder{}, vaults: map[string]string{}}
 }
 
 // Mode implements Client.
@@ -43,11 +45,40 @@ func (m *Mock) CreateOrder(_ context.Context, req CreateOrderRequest) (*Order, e
 	defer m.mu.Unlock()
 	m.seq++
 	id := fmt.Sprintf("MOCK%d%06d", time.Now().Unix()%100000, m.seq)
-	o := &mockOrder{Order: Order{ID: id, Status: "PAYER_ACTION_REQUIRED", Amount: req.Amount, Currency: strings.ToUpper(req.Currency)}, ReturnURL: req.ReturnURL, CancelURL: req.CancelURL, Items: req.Items}
-	o.ApproveURL = fmt.Sprintf("%s/mock/paypal/approve?token=%s", m.PublicURL, id)
+	o := &mockOrder{Order: Order{ID: id, Status: "PAYER_ACTION_REQUIRED", Amount: req.Amount, Currency: strings.ToUpper(req.Currency)}, ReturnURL: req.ReturnURL, CancelURL: req.CancelURL, Items: req.Items, StoreInVault: req.StoreInVault}
+	if req.VaultID != "" {
+		// Paying with a saved account: PayPal returns the order already approved.
+		payer, ok := m.vaults[req.VaultID]
+		if !ok {
+			return nil, &APIError{Status: 422, Body: `{"name":"UNPROCESSABLE_ENTITY","details":[{"issue":"INVALID_RESOURCE_ID","description":"Specified vault_id does not exist."}]}`}
+		}
+		o.Status = "APPROVED"
+		o.Approved = true
+		o.PayerEmail = payer
+		o.VaultID = req.VaultID
+		o.VaultStatus = "VAULTED"
+	} else {
+		o.ApproveURL = fmt.Sprintf("%s/mock/paypal/approve?token=%s", m.PublicURL, id)
+	}
 	m.orders[id] = o
 	out := o.Order
 	return &out, nil
+}
+
+// Revoke deletes a saved payment method, as a buyer removing the merchant's
+// permission in their PayPal account would (tests).
+func (m *Mock) Revoke(vaultID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.vaults, vaultID)
+}
+
+// Vaulted reports whether a saved payment method exists (tests).
+func (m *Mock) Vaulted(vaultID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.vaults[vaultID]
+	return ok
 }
 
 // Approve marks the order as approved by the buyer (the simulator calls it).
@@ -107,6 +138,12 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 	}
 	o.Status = "COMPLETED"
 	o.CaptureID = "CAP" + o.ID[4:]
+	if o.StoreInVault && o.VaultID == "" {
+		// The buyer consented at checkout; PayPal returns the saved account with the capture.
+		o.VaultID = "VLT" + o.ID[4:]
+		o.VaultStatus = "VAULTED"
+		m.vaults[o.VaultID] = o.PayerEmail
+	}
 	out := o.Order
 	return &out, nil
 }

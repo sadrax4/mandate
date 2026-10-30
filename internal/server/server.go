@@ -162,6 +162,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	in.Currency = strings.ToUpper(in.Currency)
 	in.ID = store.NewID("mnd")
 	in.Spent, in.Reserved = 0, 0
+	in.VaultID, in.VaultPayer, in.VaultedAt = "", "", nil // only a real checkout can save an account
 	in.CreatedAt = time.Now()
 	in.AllowedCategories = cleanList(in.AllowedCategories)
 	in.BlockedMerchants = cleanList(in.BlockedMerchants)
@@ -361,21 +362,42 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	for _, it := range p.Cart.Items {
 		items = append(items, paypal.OrderItem{Name: it.Title, SKU: it.ProductID, Quantity: it.Quantity, UnitAmount: it.UnitPrice, Category: "PHYSICAL_GOODS"})
 	}
-	order, err := s.pp.CreateOrder(ctx, paypal.CreateOrderRequest{
-		Currency:    md.Currency,
-		Amount:      d.Total,
-		Description: truncate("Mandate: "+p.Summary, 120),
-		CustomID:    p.ID,
-		Items:       items,
-		ReturnURL:   s.cfg.PublicURL + "/paypal/return",
-		CancelURL:   s.cfg.PublicURL + "/paypal/cancel",
-		BrandName:   "Mandate",
-	})
+	req := paypal.CreateOrderRequest{
+		Currency:     md.Currency,
+		Amount:       d.Total,
+		Description:  truncate("Mandate: "+p.Summary, 120),
+		CustomID:     p.ID,
+		Items:        items,
+		ReturnURL:    s.cfg.PublicURL + "/paypal/return",
+		CancelURL:    s.cfg.PublicURL + "/paypal/cancel",
+		BrandName:    "Mandate",
+		StoreInVault: md.SavePaymentMethod && !md.HasSavedPayment(),
+		VaultID:      md.VaultID,
+	}
+	order, err := s.pp.CreateOrder(ctx, req)
+	if err != nil && req.VaultID != "" {
+		// The saved account could not be charged (token revoked, vault disabled on
+		// the merchant account, ...): forget it and fall back to a normal checkout.
+		s.forgetSavedPayment(md.ID, p.MissionID, "the saved PayPal account could not be used ("+truncate(err.Error(), 160)+")")
+		req.VaultID = ""
+		req.StoreInVault = md.SavePaymentMethod
+		req.RequestID = p.ID + "-c"
+		order, err = s.pp.CreateOrder(ctx, req)
+	}
+	if err != nil && req.StoreInVault {
+		// Saving payment methods is not enabled for this merchant app: pay without saving.
+		s.st.AddEvent(p.MissionID, "payment", "PayPal could not save the payment method ("+truncate(err.Error(), 160)+"); continuing with a regular checkout", nil)
+		req.StoreInVault = false
+		req.RequestID = p.ID + "-p"
+		order, err = s.pp.CreateOrder(ctx, req)
+	}
 	if err != nil {
 		s.st.AddEvent(p.MissionID, "error", "PayPal order creation failed: "+err.Error(), nil)
 		return nil, fmt.Errorf("PayPal order creation failed: %w", err)
 	}
-	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, CreatedAt: time.Now()}
+	vaulted := req.VaultID != ""
+	prevStatus := p.Status
+	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, Vaulted: vaulted, CreatedAt: time.Now()}
 	s.st.PutPayment(pay)
 	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error { m.Reserved = mandate.Round(m.Reserved + d.Total); return nil })
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
@@ -388,8 +410,52 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		m.Status = store.MissionAwaitingPayment
 		m.OrderID = order.ID
 	})
-	s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s); waiting for the buyer to approve in PayPal", order.ID, d.Total, md.Currency, s.pp.Mode()), map[string]any{"order_id": order.ID, "approve_url": order.ApproveURL, "status": order.Status})
+	if !vaulted {
+		s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s); waiting for the buyer to approve in PayPal", order.ID, d.Total, md.Currency, s.pp.Mode()), map[string]any{"order_id": order.ID, "approve_url": order.ApproveURL, "status": order.Status})
+		return pay, nil
+	}
+
+	// Paid with the saved account: capture now, no buyer interaction.
+	s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s) with the PayPal account saved on this mandate; capturing without checkout", order.ID, d.Total, md.Currency, s.pp.Mode()), map[string]any{"order_id": order.ID, "status": order.Status, "vaulted": true})
+	if order.Status != "COMPLETED" {
+		captured, cerr := s.pp.CaptureOrder(ctx, order.ID)
+		if cerr != nil {
+			// Undo the approval so the human can approve again; the next attempt goes through checkout.
+			s.releaseReservation(pay.ID)
+			_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = "CAPTURE_FAILED" })
+			_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) { pr.Status = prevStatus; pr.OrderID = ""; pr.DecidedAt = nil })
+			_, _ = s.st.UpdateMission(p.MissionID, func(m *store.Mission) {
+				m.OrderID = ""
+				if prevStatus == store.ProposalPending {
+					m.Status = store.MissionAwaitingApproval
+				}
+			})
+			s.forgetSavedPayment(md.ID, p.MissionID, "capture with the saved PayPal account failed ("+truncate(cerr.Error(), 160)+")")
+			s.st.AddEvent(p.MissionID, "error", "the saved PayPal account could not be charged; approve again to pay through PayPal checkout", nil)
+			return nil, &httpError{502, "the saved PayPal account could not be charged; approve again to pay through PayPal checkout"}
+		}
+		order = captured
+	}
+	if order.Status == "COMPLETED" {
+		s.markPaidLocked(pay.ID, order)
+	} else {
+		_, _ = s.st.UpdatePayment(pay.ID, func(x *store.Payment) { x.Status = order.Status })
+		s.st.AddEvent(p.MissionID, "payment", "PayPal order status: "+order.Status, map[string]any{"order_id": order.ID})
+	}
+	pay, _ = s.st.GetPayment(pay.ID)
 	return pay, nil
+}
+
+// forgetSavedPayment removes the saved PayPal account from a mandate after it
+// failed to work; the next checkout saves a fresh one if the mandate asks for
+// it. Call with payMu held.
+func (s *Server) forgetSavedPayment(mandateID, missionID, reason string) {
+	md, err := s.st.GetMandate(mandateID)
+	if err != nil || !md.HasSavedPayment() {
+		return
+	}
+	_ = s.st.UpdateMandate(mandateID, func(m *mandate.Mandate) error { m.VaultID, m.VaultPayer, m.VaultedAt = "", "", nil; return nil })
+	s.st.AddEvent(missionID, "vault", reason+"; the saved account was removed from the mandate and the next checkout will save a new one", map[string]any{"vault_id": md.VaultID})
 }
 
 // releaseReservation gives a payment's budget reservation back to the mandate.
@@ -537,6 +603,11 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) markPaid(payID string, order *paypal.Order) {
 	s.payMu.Lock()
 	defer s.payMu.Unlock()
+	s.markPaidLocked(payID, order)
+}
+
+// markPaidLocked is markPaid for callers that already hold payMu.
+func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	pay, err := s.st.GetPayment(payID)
 	if err != nil || pay.Status == "COMPLETED" {
 		return
@@ -558,8 +629,28 @@ func (s *Server) markPaid(payID string, order *paypal.Order) {
 	})
 	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) { pr.Status = store.ProposalPaid })
 	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionPaid })
-	s.st.AddEvent(pay.MissionID, "paid", fmt.Sprintf("payment captured: %.2f %s (capture %s)", amount, pay.Currency, order.CaptureID), map[string]any{"order_id": order.ID, "capture_id": order.CaptureID, "amount": amount})
+	how := ""
+	if pay.Vaulted {
+		how = " with the saved PayPal account, no checkout needed"
+	}
+	s.st.AddEvent(pay.MissionID, "paid", fmt.Sprintf("payment captured: %.2f %s (capture %s)%s", amount, pay.Currency, order.CaptureID, how), map[string]any{"order_id": order.ID, "capture_id": order.CaptureID, "amount": amount, "vaulted": pay.Vaulted})
 	s.shopper.Forget(pay.MissionID)
+
+	// First vaulted checkout under a mandate that asked to save the account.
+	if order.VaultID != "" && order.VaultStatus == "VAULTED" {
+		if md, err := s.st.GetMandate(pay.MandateID); err == nil && md.SavePaymentMethod && !md.HasSavedPayment() {
+			now := time.Now()
+			_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error {
+				m.VaultID, m.VaultPayer, m.VaultedAt = order.VaultID, order.PayerEmail, &now
+				return nil
+			})
+			msg := "PayPal account saved on this mandate: approved carts now pay with one click"
+			if md.AutoApproveUnder > 0 && !md.RequireApproval {
+				msg += fmt.Sprintf(", and carts under %.2f %s pay with no click at all", md.AutoApproveUnder, md.Currency)
+			}
+			s.st.AddEvent(pay.MissionID, "vault", msg, map[string]any{"vault_id": order.VaultID, "payer": order.PayerEmail})
+		}
+	}
 }
 
 // markRefunded reverses a completed capture (refund, reversal, denial after

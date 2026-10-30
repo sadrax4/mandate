@@ -24,9 +24,10 @@ Agentic commerce only works if people can delegate purchases without handing an 
 3. **Watch it work.** Every search, check and decision streams to the UI over server-sent events. The products it considered are shown in an AG Grid, with the proposed ones highlighted.
 4. **Approve or reject.** A proposal shows each item, the agent's reason, the total, the remaining budget and which mandate checks passed. Reject with feedback ("too expensive, stay under $80") and the agent revises in the same conversation.
 5. **Pay with PayPal.** Approval creates a PayPal order (Orders v2, `intent=CAPTURE`) for the exact cart, reserves the budget, and sends the buyer to PayPal checkout. On return the order is captured and the mandate's spent total is updated. Cancelling at PayPal releases the reservation.
-6. **Audit.** The ledger lists every order with mission, mandate, amount, status, PayPal order ID, capture ID and payer, sortable and filterable.
+6. **Save the account, pay with one click.** A mandate can ask PayPal to save the buyer's PayPal account at the first checkout (PayPal vault). From then on, carts you approve are paid with one click and carts under the auto-approve threshold are paid with no click at all, with the mandate still deciding every cent. The agent still has no payment tool.
+7. **Audit.** The ledger lists every order with mission, mandate, amount, status, PayPal order ID, capture ID, payer and whether it went through checkout or the saved account, sortable and filterable.
 
-Two independent gates protect the money: the policy engine (re-run at approval time, because the budget may have moved) and PayPal checkout itself, where the buyer logs in and approves. Carts under the auto-approve threshold skip the first gate but never the second.
+Two independent gates protect the money: the policy engine (re-run at approval time, because the budget may have moved) and the buyer's own PayPal consent, given at checkout for every order, or once at the first checkout when the account is saved. Carts under the auto-approve threshold skip the first gate but never the second.
 
 ## Screenshots
 
@@ -42,8 +43,9 @@ Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.
 
 1. Open the live demo, click **New mandate** (or use *Create demo mandate*), give it a budget of 300 and a per-item cap of 150.
 2. Start a mission such as *"a mechanical keyboard with brown switches under $120"* and watch the agent search Channel3, check the mandate and propose.
-3. **Approve & pay with PayPal**, log in with the sandbox buyer above, pay. Back in Mandate the capture ID appears and the **Ledger** shows the order.
-4. Start another mission and **Reject with feedback** to see the agent revise.
+3. **Approve & pay with PayPal**, log in with the sandbox buyer above, pay. Back in Mandate the capture ID appears and the **Ledger** shows the order. Because the mandate asked to save the account, the activity log now says *PayPal account saved on this mandate*.
+4. Start a second mission on the same mandate and approve it: it is paid with one click and no checkout. A cart under the auto-approve threshold is paid before the agent even finishes.
+5. Start another mission and **Reject with feedback** to see the agent revise.
 
 The same flow runs locally with no keys at all (offline demo mode), see below.
 
@@ -69,6 +71,8 @@ go run ./cmd/mandate
 ```
 
 Approving a proposal now creates a real sandbox order. At checkout, log in with a **sandbox personal (buyer) account** from the PayPal Developer Dashboard (*Testing Tools → Sandbox Accounts*), approve, and you are redirected back; the server captures the order and the capture ID appears on the mission page and in the ledger.
+
+To test saved accounts (one-click and auto-pay) in sandbox, enable the **Vault** feature on your REST app in the Developer Dashboard (*Apps & Credentials → your app → Features → Vault / Save payment methods*). Without it, PayPal refuses to save the account; Mandate then falls back to a regular checkout and says so in the mission log.
 
 To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [trychannel3.com](https://trychannel3.com)); the agent then searches live US retail products through Channel3's product search API instead of the demo catalog.
 
@@ -107,6 +111,7 @@ All PayPal code lives in `internal/paypal` and uses the REST API directly from G
 - **Reconciliation** (`GET /v2/checkout/orders/{id}`) behind *Check status with PayPal*: if the buyer approved but the redirect never arrived, the order is captured; if PayPal already shows it completed, the ledger is updated.
 - **Webhooks** (`POST /paypal/webhook`): every delivery is verified with `POST /v1/notifications/verify-webhook-signature` before it is trusted. `CHECKOUT.ORDER.APPROVED` captures the order even if the buyer closed the tab; `PAYMENT.CAPTURE.COMPLETED` reconciles the ledger; denied/refunded/reversed captures update the payment status. Handling is idempotent, so PayPal retries never double-count a spend. Configure a webhook for `<PUBLIC_URL>/paypal/webhook` in the Developer Dashboard and set `PAYPAL_WEBHOOK_ID`.
 - **Cancel** (`/paypal/cancel`) releases the budget reservation.
+- **Saved payment methods (vault).** When a mandate asks for it, the first order carries `payment_source.paypal.attributes.vault` (`store_in_vault: ON_SUCCESS`, `usage_type: MERCHANT`); the buyer consents at checkout and the capture response returns the vault token (`payment_source.paypal.attributes.vault.id`, status `VAULTED`), which is stored on the mandate. Later orders are created with `payment_source.paypal.vault_id` and captured server-side straight away: approved carts pay with one click, carts under the auto-approve threshold pay with none. A token that stops working (revoked by the buyer, vault disabled on the app) is forgotten and the flow falls back to a normal checkout, which saves a fresh one.
 
 Budget accounting is explicit: creating an order moves the amount into *reserved*; a capture moves it to *spent*; a cancel releases it. The mandate re-evaluates the cart at approval time, so a proposal that was fine an hour ago cannot be paid if other missions have used the budget since.
 
@@ -205,7 +210,7 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 
 ## Sponsor tools used
 
-- **PayPal**: Orders v2 (create, capture, get), OAuth2, sandbox checkout. Central to the product: it is the only way money moves.
+- **PayPal**: Orders v2 (create, capture, get), saved payment methods (vault), verified webhooks, OAuth2, sandbox checkout. Central to the product: it is the only way money moves.
 - **AG Grid** (Community): the products-considered grid, the proposal item grid and the ledger (sorting, filtering, pagination, CSV export, themed for light and dark mode via the Theming API).
 - **Channel3**: live product search for AI agents as the catalog backend (`CATALOG=channel3`): `POST /v1/search` with price, availability and condition filters and locale config, `GET /v1/products/{id}` for details. Each product is normalised to its cheapest in-stock offer (merchant domain, buy URL, price), with brand, cross-merchant ratings, category path, structured attributes and key features passed through to the agent.
 - **Render**: `render.yaml` and Docker image for one-click deployment.
@@ -215,13 +220,14 @@ On your own server, `docker compose up -d --build` runs it with a persistent dat
 - Secrets only come from the environment; nothing is logged or stored.
 - The agent never sees PayPal credentials and has no payment tool. Payment is a server-side consequence of a human decision.
 - Orders are idempotent per proposal; budget is reserved before checkout and released on cancel.
+- A saved payment token lives on the mandate and is only usable with the merchant's own API credentials; every charge made with it still goes through the policy engine, so the mandate's limits bound what a saved account can ever be charged.
 - Persistence is a JSON file: intentional for a hackathon, trivial to swap for Postgres behind `internal/store`.
 - The Channel3 client decodes the documented response shapes defensively; if the schema changes, `CATALOG=mock` keeps the demo working.
 - Not production-ready for real money without authentication and a database.
 
 ## What's next
 
-- Vaulted payment methods / reference transactions so sub-threshold purchases can complete without a checkout hop, still inside the mandate.
+- Recurring mandates (a monthly budget the agent keeps spending against) and shared mandates for teams.
 - Multi-currency mandates and Pay Later options at checkout.
 - PayPal Agent Toolkit / MCP server as a second tool surface for invoices and disputes.
 

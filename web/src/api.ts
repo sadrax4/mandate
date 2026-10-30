@@ -12,6 +12,10 @@ export type Mandate = {
   spent: number
   reserved: number
   created_at: string
+  save_payment_method?: boolean
+  vault_id?: string
+  vault_payer?: string
+  vaulted_at?: string
 }
 
 export type Mission = {
@@ -79,6 +83,7 @@ export type Payment = {
   capture_id?: string
   payer_email?: string
   mode: string
+  vaulted?: boolean
   created_at: string
   updated_at: string
 }

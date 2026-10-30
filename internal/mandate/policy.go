@@ -29,7 +29,24 @@ type Mandate struct {
 	Spent             float64   `json:"spent"`              // captured payments
 	Reserved          float64   `json:"reserved"`           // approved, awaiting capture
 	CreatedAt         time.Time `json:"created_at"`
+
+	// SavePaymentMethod asks PayPal to save (vault) the buyer's PayPal account
+	// at the first successful checkout under this mandate. Later carts are
+	// paid with the saved account: approved carts with one click, carts under
+	// AutoApproveUnder with no click at all. The mandate stays the only
+	// authority; the agent still has no way to pay.
+	SavePaymentMethod bool `json:"save_payment_method"`
+	// VaultID is the PayPal payment token saved for this mandate, empty until
+	// the first vaulted checkout completes. It is only usable with the
+	// merchant's own API credentials.
+	VaultID    string     `json:"vault_id,omitempty"`
+	VaultPayer string     `json:"vault_payer,omitempty"`
+	VaultedAt  *time.Time `json:"vaulted_at,omitempty"`
 }
+
+// HasSavedPayment reports whether a saved PayPal account can pay for carts
+// under this mandate without a checkout hop.
+func (m Mandate) HasSavedPayment() bool { return m.VaultID != "" }
 
 // Remaining is the budget still available for new proposals.
 func (m Mandate) Remaining() float64 {

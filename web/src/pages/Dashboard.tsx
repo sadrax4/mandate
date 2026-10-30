@@ -2,10 +2,11 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { api, money, type Mandate, type Mission } from '../api'
 import { BudgetBar, Card, Chip, Empty, Pill, navigate } from '../components/ui'
 
-const DEMO_GOALS = [
-  'A mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120',
-  'Noise cancelling headphones for open-office work',
-  'A gooseneck kettle and a coffee grinder for pour-over',
+const DEMO_GOALS: { goal: string; note?: string }[] = [
+  { goal: 'A mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120' },
+  { goal: 'Noise cancelling headphones for open-office work' },
+  { goal: 'A large felt desk mat under $40' },
+  { goal: 'A gooseneck kettle and a coffee grinder for pour-over', note: 'outside a computers/office/audio mandate: watch the agent explain' },
 ]
 
 export default function Dashboard() {
@@ -34,12 +35,13 @@ export default function Dashboard() {
       await api.createMandate({
         name: 'Desk refresh',
         currency: 'USD',
-        total_budget: 250,
-        max_per_item: 120,
-        auto_approve_under: 0,
+        total_budget: 300,
+        max_per_item: 150,
+        auto_approve_under: 40,
         allowed_categories: ['computers', 'office', 'audio'],
-        blocked_merchants: ['BudgetBytes'],
-        min_rating: 4.3,
+        blocked_merchants: ['temu.com'],
+        min_rating: 4,
+        save_payment_method: true,
       })
       await load()
     } catch (e: any) {
@@ -57,11 +59,9 @@ export default function Dashboard() {
           <p className="lede">A mandate is the authority you give the agent: a budget, caps and rules. Start a mission under a mandate and the agent researches, compares and proposes. You approve. PayPal pays.</p>
         </div>
         <div className="actions">
-          {mandates.length === 0 && (
-            <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
-              Create demo mandate
-            </button>
-          )}
+          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
+            {busy === 'demo' ? 'Creating…' : 'Create demo mandate'}
+          </button>
           <a className="btn primary" href="#/mandates/new">New mandate</a>
         </div>
       </div>
@@ -136,6 +136,11 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
         {m.allowed_categories && m.allowed_categories.length > 0 && <Chip>only {m.allowed_categories.join(', ')}</Chip>}
         {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
         {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
+        {m.vault_id ? (
+          <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
+        ) : m.save_payment_method ? (
+          <Chip>saves PayPal at the first checkout</Chip>
+        ) : null}
       </div>
       <form className="goal-form" onSubmit={start}>
         <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the agent buy? e.g. a 27-inch 4K USB-C monitor" />
@@ -143,7 +148,10 @@ function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; mi
       </form>
       <div className="suggestions">
         {DEMO_GOALS.map((g) => (
-          <button key={g} type="button" className="link" onClick={() => setGoal(g)}>{g}</button>
+          <button key={g.goal} type="button" className="link" title={g.note} onClick={() => setGoal(g.goal)}>
+            {g.goal}
+            {g.note && <span className="muted"> ({g.note})</span>}
+          </button>
         ))}
       </div>
       {err && <div className="alert bad">{err}</div>}

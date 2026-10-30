@@ -5,7 +5,7 @@ import { Grid } from '../components/Grid'
 import { Card, Chip, Empty, Pill } from '../components/ui'
 import { Markdown } from '../components/Markdown'
 
-const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'message']
+const EVENT_TYPES = ['status', 'assistant', 'tool_call', 'tool_result', 'candidates', 'check', 'proposal', 'policy_block', 'error', 'done', 'payment', 'paid', 'rejected', 'cancelled', 'webhook', 'refunded', 'vault', 'message']
 const CHECK_LABEL: Record<string, string> = {
   within_budget: 'within budget',
   under_per_item_cap: 'under per-item cap',
@@ -15,7 +15,7 @@ const CHECK_LABEL: Record<string, string> = {
 }
 const ICON: Record<string, string> = {
   status: '•', assistant: '✎', tool_call: '⚙', tool_result: '↩', candidates: '≡', check: '✓', proposal: '★', policy_block: '⛔',
-  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺',
+  error: '!', done: '■', payment: '$', paid: '✓', rejected: '✕', cancelled: '✕', webhook: '⇄', refunded: '↺', vault: '🔒',
 }
 
 type Candidate = Product & { query: string }
@@ -134,7 +134,13 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
     setBusy('approve')
     try {
       const r = await api.approve(latest.id)
-      window.location.assign(r.approve_url)
+      if (r.approve_url) {
+        window.location.assign(r.approve_url)
+        return
+      }
+      // Paid with the PayPal account saved on the mandate: no checkout hop.
+      await refresh()
+      setBusy('')
     } catch (e: any) {
       setErr(e.message)
       setBusy('')
@@ -250,7 +256,9 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
                   {!unpaidOrder && (
                     <button className="btn paypal lg" onClick={approve} disabled={busy !== ''}>
-                      {busy === 'approve' ? 'Creating PayPal order…' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
+                      {busy === 'approve'
+                        ? mandate?.vault_id ? 'Paying with saved PayPal…' : 'Creating PayPal order…'
+                        : mandate?.vault_id ? 'Approve & pay with saved PayPal' : latest.status === 'auto_approved' ? 'Continue to PayPal' : 'Approve & pay with PayPal'}
                     </button>
                   )}
                   {!rejecting && (
@@ -300,6 +308,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                     <dd>{payment.payer_email}</dd>
                   </>
                 )}
+                <dt>Checkout</dt>
+                <dd>{payment.vaulted ? 'none: paid with the PayPal account saved on this mandate' : 'PayPal checkout, approved by the buyer'}</dd>
               </dl>
               {payment.approve_url && payment.status !== 'COMPLETED' && payment.status !== 'CANCELLED' && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>

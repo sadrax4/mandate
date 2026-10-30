@@ -103,7 +103,7 @@ How to work:
 3. Before proposing, call check_mandate with the exact cart. If it reports violations, fix the cart (cheaper item, different merchant, drop an optional item) and check again.
 4. Call propose_cart exactly once with the final cart, one short factual reason per item and a one-paragraph summary. Quantity is 1 unless the goal says otherwise.
 5. If the goal cannot be met within the mandate, do not propose. Explain precisely what blocks it (for example "the only 4K USB-C monitors cost at least $329, above the $250 per-item cap") so the human can adjust the mandate.
-6. After propose_cart returns pending_approval or auto_approved, stop calling tools and write a 2-4 sentence summary for the human: what you chose, why, the total, and what you considered and rejected.
+6. After propose_cart returns pending_approval, auto_approved or paid, stop calling tools and write a 2-4 sentence summary for the human: what you chose, why, the total, and what you considered and rejected. If the result says the cart was already paid with the saved PayPal account, say so plainly.
 
 Rules of the policy engine you should know: the minimum-rating rule only applies to products that have a rating; a product with no reviews passes it (say so in your reason and prefer rated alternatives when they exist). The per-item cap applies to the unit price; the budget applies to the cart total including quantities.
 
@@ -331,7 +331,7 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 		},
 		{
 			Name:        "propose_cart",
-			Description: "Propose the final cart for human approval. Only call it after check_mandate reported allowed=true. Each item needs a short factual reason. Returns the proposal id and its status: pending_approval (a human must approve), auto_approved (under the auto-approve threshold, going straight to PayPal checkout) or rejected_by_policy (fix the violations and try again).",
+			Description: "Propose the final cart for human approval. Only call it after check_mandate reported allowed=true. Each item needs a short factual reason. Returns the proposal id and its status: pending_approval (a human must approve), auto_approved (under the auto-approve threshold; sent straight to PayPal checkout), paid (under the threshold and paid at once with the PayPal account saved on the mandate) or rejected_by_policy (fix the violations and try again).",
 			Properties: map[string]any{
 				"items": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
 					"product_id": map[string]any{"type": "string"},
@@ -387,7 +387,17 @@ func (s *Shopper) tools(missionID string, searches *int) []Tool {
 						s.Store.AddEvent(missionID, "error", "post-proposal hook failed: "+err.Error(), nil)
 					}
 				}
-				return mustJSON(map[string]any{"proposal_id": p.ID, "status": p.Status, "decision": d}), nil
+				status, note := p.Status, "a human must approve before anything is paid"
+				if cur, err := s.Store.GetProposal(p.ID); err == nil {
+					status = cur.Status
+				}
+				switch status {
+				case store.ProposalPaid:
+					note = "under the auto-approve threshold: paid at once with the PayPal account saved on this mandate, no checkout needed"
+				case store.ProposalApproved, store.ProposalAutoApproved:
+					note = "under the auto-approve threshold: a PayPal order was created and the buyer completes checkout"
+				}
+				return mustJSON(map[string]any{"proposal_id": p.ID, "status": status, "payment": note, "decision": d}), nil
 			},
 		},
 	}
@@ -439,6 +449,7 @@ func mandateView(m *mandate.Mandate) map[string]any {
 		"name": m.Name, "currency": m.Currency, "total_budget": m.TotalBudget, "spent": m.Spent, "reserved": m.Reserved,
 		"max_per_item": m.MaxPerItem, "auto_approve_under": m.AutoApproveUnder, "allowed_categories": m.AllowedCategories,
 		"blocked_merchants": m.BlockedMerchants, "min_rating": m.MinRating, "require_approval": m.RequireApproval,
+		"saved_paypal_account": m.HasSavedPayment(),
 	}
 }
 

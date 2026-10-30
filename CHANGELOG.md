@@ -4,6 +4,10 @@ Everything here was built during the PayPal AI Hackathon submission period (Oct 
 
 ## 2026-10-30
 
+- ledger: the capture's own status decides whether money moved: pending captures (eCheck, review) stay reserved until PayPal completes them, declined ones hand the proposal back for a fresh approval; refunds that arrive before their capture are parked and applied at booking; a withdrawn order that PayPal captures anyway is booked and flagged, or reconciled by the status check
+- ledger: in-flight approvals keep their reservation while other orders settle; a second approval (double click, second tab) waits for the order and returns it; re-approving a paid proposal is harmless
+- ui: action errors stay on screen, no sideways scroll on phones, cart grids without empty space, grid status colours, full CSV exports, a demo mandate that is created once; the activity log follows a running mission and shows MCP tool calls live
+- review: eleven review rounds (money path, concurrency, UI) with a test for every fix; `go test -race` in CI
 - docs: screenshots for one-click payment and standing orders; video script covers the new features in three minutes
 - docs: final Devpost text with PayPal's agentic-commerce framing and the additional-info answers
 - standing orders, Channel3 links, assistant fallback

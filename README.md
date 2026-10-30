@@ -275,6 +275,7 @@ What could go wrong, and what stops it. The principle is *fail closed*: if anyth
 | Prompt injection through product data (titles, descriptions, reviews from third-party retailers via Channel3 are untrusted text) | The system prompt tells the agent to treat instructions inside product data as noise; tool results are data, not instructions; even a fully hijacked agent can only *propose*, and the human sees the cart, the reasons and every candidate before anything moves. |
 | Double spend, replays, racing redirects and webhooks | `PayPal-Request-Id` per proposal, `ORDER_ALREADY_CAPTURED` tolerated, every money transition serialised under one mutex, budget reserved on order creation and released exactly once. |
 | Forged webhook deliveries | Every delivery is verified with PayPal's `verify-webhook-signature` before the ledger is touched; unknown orders are ignored. |
+| An order that reads COMPLETED although the capture was declined or is still pending | The ledger books money only on the capture's own status: a pending capture (eCheck, review) keeps its reservation until PayPal completes it, a declined one releases the budget and hands the proposal back; refunds that arrive before their capture are parked and applied when it is booked. |
 | Misuse of a saved PayPal account | The vault token only works with the merchant's own API credentials; every charge still passes the policy engine; a token that fails is forgotten; the human can *forget saved PayPal* on the mandate at any time; the buyer can revoke the merchant in their PayPal account. |
 | The order assistant doing more than reading | Only read-only PayPal MCP tools are enabled; the mutating ones (create, pay, refund, accept dispute) are disabled in the toolset the model receives; the server verifies the MCP handshake and the tool list itself. |
 | Secrets leaking to the model or logs | Keys come from the environment; they are never logged, stored or placed in prompts; the agent never sees PayPal credentials. |
@@ -284,7 +285,7 @@ What could go wrong, and what stops it. The principle is *fail closed*: if anyth
 
 - Secrets only come from the environment; nothing is logged or stored.
 - The agent never sees PayPal credentials and has no payment tool. Payment is a server-side consequence of a human decision.
-- Orders are idempotent per proposal; budget is reserved before checkout and released on cancel.
+- Orders are idempotent per proposal; budget is reserved before checkout and released exactly once, on capture, cancel, void or decline. Every transition is covered by a test (`go test -race ./...`).
 - A saved payment token lives on the mandate and is only usable with the merchant's own API credentials; every charge made with it still goes through the policy engine, so the mandate's limits bound what a saved account can ever be charged.
 - Persistence is a JSON file: intentional for a hackathon, trivial to swap for Postgres behind `internal/store`.
 - The Channel3 client decodes the documented response shapes defensively; if the schema changes, `CATALOG=mock` keeps the demo working.

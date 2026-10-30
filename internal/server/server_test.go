@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -894,5 +895,75 @@ func TestNegotiatedServiceIsApprovedAndPaidLikeAnyCart(t *testing.T) {
 	}
 	if code := e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "x", "kind": "auction"}, &ms); code != 400 {
 		t.Fatalf("bad kind: %d", code)
+	}
+}
+
+func TestVaultOrderCompletedAtCreationIsAccountedOnce(t *testing.T) {
+	e := newEnv(t)
+	e.pp.VaultCompletesOnCreate = true
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Petty cash", "total_budget": 200, "auto_approve_under": 60, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionAwaitingPayment)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(ms["id"].(string), store.MissionPaid)
+	spent1, _ := e.mandateNumbers(mdID)
+
+	// the second cart is paid with the saved account and PayPal completes it at creation
+	var ms2 map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms2)
+	out = e.waitMission(ms2["id"].(string), store.MissionPaid)
+	pay := out["payments"].([]any)[0].(map[string]any)
+	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || pay["capture_id"] == "" {
+		t.Fatalf("payment = %v", pay)
+	}
+	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
+		t.Fatalf("proposal not paid: %v", out["proposals"])
+	}
+	spent2, reserved := e.mandateNumbers(mdID)
+	if reserved != 0 || spent2 <= spent1 {
+		t.Fatalf("accounting: spent %v -> %v reserved %v", spent1, spent2, reserved)
+	}
+	var paidEvents int
+	for _, ev := range out["events"].([]any) {
+		if ev.(map[string]any)["type"] == "paid" {
+			paidEvents++
+		}
+	}
+	if paidEvents != 1 {
+		t.Fatalf("paid events = %d", paidEvents)
+	}
+	// syncing a completed payment never double-counts
+	var synced map[string]any
+	e.post("/api/payments/"+pay["id"].(string)+"/sync", nil, &synced)
+	spent3, reserved3 := e.mandateNumbers(mdID)
+	if spent3 != spent2 || reserved3 != 0 {
+		t.Fatalf("sync changed the books: %v %v", spent3, reserved3)
+	}
+}
+
+func TestSyncRepairsACompletedButUnaccountedPayment(t *testing.T) {
+	// Simulates the bug class: the payment row says COMPLETED but the
+	// proposal, mission and reservation were never finished.
+	e := newEnv(t)
+	mdID, mid, orderID := e.startAutoApproved()
+	_, _ = e.pp.Approve(orderID, true)
+	if _, err := e.pp.CaptureOrder(context.Background(), orderID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = e.st.UpdatePayment(orderID, func(p *store.Payment) { p.Status = "COMPLETED" })
+	var synced map[string]any
+	if code := e.post("/api/payments/"+orderID+"/sync", nil, &synced); code != 200 {
+		t.Fatalf("sync: %d %v", code, synced)
+	}
+	out := e.waitMission(mid, store.MissionPaid)
+	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
+		t.Fatalf("proposal = %v", out["proposals"])
+	}
+	spent, reserved := e.mandateNumbers(mdID)
+	if reserved != 0 || spent <= 0 {
+		t.Fatalf("accounting: spent %v reserved %v", spent, reserved)
 	}
 }

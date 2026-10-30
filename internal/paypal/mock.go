@@ -15,6 +15,9 @@ import (
 // real PayPal checkout does.
 type Mock struct {
 	PublicURL string // base URL of our own server, used to build approve links
+	// VaultCompletesOnCreate makes vault_id orders come back COMPLETED with a
+	// capture at creation, which PayPal does for saved PayPal accounts.
+	VaultCompletesOnCreate bool
 
 	mu     sync.Mutex
 	orders map[string]*mockOrder
@@ -57,6 +60,10 @@ func (m *Mock) CreateOrder(_ context.Context, req CreateOrderRequest) (*Order, e
 		o.PayerEmail = payer
 		o.VaultID = req.VaultID
 		o.VaultStatus = "VAULTED"
+		if m.VaultCompletesOnCreate {
+			o.Status = "COMPLETED"
+			o.CaptureID = "CAP" + o.ID[4:]
+		}
 	} else {
 		o.ApproveURL = fmt.Sprintf("%s/mock/paypal/approve?token=%s", m.PublicURL, id)
 	}

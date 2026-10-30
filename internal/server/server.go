@@ -601,7 +601,13 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	}
 	vaulted := req.VaultID != ""
 	prevStatus := p.Status
-	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, Vaulted: vaulted, CreatedAt: time.Now()}
+	initial := order.Status
+	if vaulted && initial == "COMPLETED" {
+		// PayPal can capture a vault order at creation; the accounting below
+		// (markPaidLocked) must still run exactly once, so start from APPROVED.
+		initial = "APPROVED"
+	}
+	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: initial, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, Vaulted: vaulted, CreatedAt: time.Now()}
 	s.st.PutPayment(pay)
 	_ = s.st.UpdateMandate(md.ID, func(m *mandate.Mandate) error { m.Reserved = mandate.Round(m.Reserved + d.Total); return nil })
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
@@ -775,13 +781,15 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pay.Status == "COMPLETED" {
-		// The account may have been saved asynchronously after the capture.
-		if md, err := s.st.GetMandate(pay.MandateID); err == nil && md.SavePaymentMethod && !md.HasSavedPayment() {
-			if order, err := s.pp.GetOrder(r.Context(), pay.ID); err == nil {
-				s.payMu.Lock()
-				s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
-				s.payMu.Unlock()
-			}
+		// Finish anything PayPal completed that we never accounted for (a
+		// vault order captured at creation, a restart mid-capture), and pick
+		// up an account saved asynchronously after the capture.
+		if order, err := s.pp.GetOrder(r.Context(), pay.ID); err == nil {
+			s.payMu.Lock()
+			s.markPaidLocked(pay.ID, order)
+			s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
+			s.payMu.Unlock()
+			pay, _ = s.st.GetPayment(pay.ID)
 		}
 		writeJSON(w, 200, pay)
 		return
@@ -826,10 +834,20 @@ func (s *Server) markPaid(payID string, order *paypal.Order) {
 	s.markPaidLocked(payID, order)
 }
 
-// markPaidLocked is markPaid for callers that already hold payMu.
+// markPaidLocked is markPaid for callers that already hold payMu. It is
+// idempotent on the accounting state: a payment whose proposal is already
+// paid (or refunded, reversed, denied) is left alone, even if PayPal reports
+// the order again.
 func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	pay, err := s.st.GetPayment(payID)
-	if err != nil || pay.Status == "COMPLETED" {
+	if err != nil {
+		return
+	}
+	switch pay.Status {
+	case "REFUNDED", "REVERSED", "DENIED":
+		return
+	}
+	if pr, err := s.st.GetProposal(pay.ProposalID); err == nil && pr.Status == store.ProposalPaid {
 		return
 	}
 	amount := order.Amount

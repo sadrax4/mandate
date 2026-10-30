@@ -56,6 +56,12 @@ func (e *env) startAutoApproved() (mandateID, missionID, orderID string) {
 	return md["id"].(string), ms["id"].(string), out["payments"].([]any)[0].(map[string]any)["id"].(string)
 }
 
+// str reads a JSON string field; a missing field (omitempty) reads as "".
+func str(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
 func (e *env) mandateNumbers(id string) (spent, reserved float64) {
 	var mdv map[string]any
 	e.get("/api/mandates/"+id, &mdv)
@@ -184,7 +190,7 @@ func TestFullFlowApproveAndPay(t *testing.T) {
 	}
 	out = e.waitMission(mid, store.MissionPaid)
 	pays := out["payments"].([]any)
-	if len(pays) != 1 || pays[0].(map[string]any)["status"] != "COMPLETED" || pays[0].(map[string]any)["capture_id"] == "" {
+	if len(pays) != 1 || pays[0].(map[string]any)["status"] != "COMPLETED" || str(pays[0].(map[string]any), "capture_id") == "" {
 		t.Fatalf("payments = %v", pays)
 	}
 	e.get("/api/mandates/"+md["id"].(string), &mdv)
@@ -292,7 +298,7 @@ func TestSyncCapturesApprovedOrder(t *testing.T) {
 	if code := e.post("/api/payments/"+orderID+"/sync", nil, &pay); code != 200 {
 		t.Fatalf("sync: %d %v", code, pay)
 	}
-	if pay["status"] != "COMPLETED" || pay["capture_id"] == "" {
+	if pay["status"] != "COMPLETED" || str(pay, "capture_id") == "" {
 		t.Fatalf("sync did not capture: %v", pay)
 	}
 	e.waitMission(ms["id"].(string), store.MissionPaid)
@@ -336,7 +342,7 @@ func TestWebhookCapturesApprovedOrder(t *testing.T) {
 	}
 	out = e.waitMission(ms["id"].(string), store.MissionPaid)
 	pay := out["payments"].([]any)[0].(map[string]any)
-	if pay["status"] != "COMPLETED" || pay["capture_id"] == "" {
+	if pay["status"] != "COMPLETED" || str(pay, "capture_id") == "" {
 		t.Fatalf("webhook did not capture: %v", pay)
 	}
 	// a second delivery (PayPal retries) must not double-count the spend
@@ -710,7 +716,7 @@ func TestSavedPayPalPaysApprovedCartsWithoutCheckout(t *testing.T) {
 		t.Fatalf("expected no checkout, got approve_url %v", ap["approve_url"])
 	}
 	pay := ap["payment"].(map[string]any)
-	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || pay["capture_id"] == "" || pay["payer_email"] == "" {
+	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || str(pay, "capture_id") == "" || str(pay, "payer_email") == "" {
 		t.Fatalf("payment = %v", pay)
 	}
 	out := e.waitMission(mid2, store.MissionPaid)
@@ -1017,7 +1023,7 @@ func TestVaultOrderCompletedAtCreationIsAccountedOnce(t *testing.T) {
 	e.post("/api/missions", map[string]any{"mandate_id": mdID, "goal": "aeropress coffee maker"}, &ms2)
 	out = e.waitMission(ms2["id"].(string), store.MissionPaid)
 	pay := out["payments"].([]any)[0].(map[string]any)
-	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || pay["capture_id"] == "" {
+	if pay["status"] != "COMPLETED" || pay["vaulted"] != true || str(pay, "capture_id") == "" {
 		t.Fatalf("payment = %v", pay)
 	}
 	if out["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalPaid {
@@ -1066,5 +1072,48 @@ func TestSyncRepairsACompletedButUnaccountedPayment(t *testing.T) {
 	spent, reserved := e.mandateNumbers(mdID)
 	if reserved != 0 || spent <= 0 {
 		t.Fatalf("accounting: spent %v reserved %v", spent, reserved)
+	}
+}
+
+func TestLateCaptureOfASupersededOrderIsBookedButNotMistakenForTheCurrentOne(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve: %d %v", code, ap)
+	}
+	o2 := ap["payment"].(map[string]any)["id"].(string)
+	// an older order for the same proposal (a capture that failed on our side) that PayPal captures late
+	e.st.PutPayment(&store.Payment{ID: "MOCK-OLD", ProposalID: pid, MissionID: mid, MandateID: mdID, Status: store.PaymentCaptureFailed, Amount: 39.95, Currency: "USD", Mode: "mock", CreatedAt: time.Now()})
+	spentBefore, reservedBefore := e.mandateNumbers(mdID)
+	e.srv.markPaid("MOCK-OLD", &paypal.Order{ID: "MOCK-OLD", Status: "COMPLETED", CaptureID: "CAPOLD", Amount: 39.95, Currency: "USD"})
+	spentMid, reservedMid := e.mandateNumbers(mdID)
+	if mandate.Round(spentMid-spentBefore) != 39.95 || reservedMid != reservedBefore {
+		t.Fatalf("late capture must be booked without touching the live reservation: spent %v->%v reserved %v->%v", spentBefore, spentMid, reservedBefore, reservedMid)
+	}
+	var detail map[string]any
+	e.get("/api/missions/"+mid, &detail)
+	if detail["proposals"].([]any)[0].(map[string]any)["status"] != store.ProposalApproved {
+		t.Fatalf("stale capture must not mark the proposal paid: %v", detail["proposals"])
+	}
+	// the current order completes normally and is booked too
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	spentEnd, reservedEnd := e.mandateNumbers(mdID)
+	if reservedEnd != 0 || mandate.Round(spentEnd-spentMid) <= 0 {
+		t.Fatalf("current order not booked: spent %v->%v reserved %v", spentMid, spentEnd, reservedEnd)
+	}
+	p2, _ := e.st.GetPayment(o2)
+	p1, _ := e.st.GetPayment("MOCK-OLD")
+	if !p1.Accounted || !p2.Accounted {
+		t.Fatalf("both captures must be accounted: old=%v new=%v", p1.Accounted, p2.Accounted)
+	}
+	// booking is idempotent per payment
+	e.srv.markPaid("MOCK-OLD", &paypal.Order{ID: "MOCK-OLD", Status: "COMPLETED", CaptureID: "CAPOLD", Amount: 39.95, Currency: "USD"})
+	if spentAgain, _ := e.mandateNumbers(mdID); spentAgain != spentEnd {
+		t.Fatalf("double booking: %v -> %v", spentEnd, spentAgain)
 	}
 }

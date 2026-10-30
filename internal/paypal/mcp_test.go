@@ -100,9 +100,9 @@ func sseMCPServer(t *testing.T) *httptest.Server {
 			f := w.(http.Flusher)
 			mu.Lock()
 			stream, flush = w, f.Flush
-			mu.Unlock()
 			fmt.Fprint(w, "event: endpoint\ndata: /sse/message?sessionId=abc\n\n")
 			f.Flush()
+			mu.Unlock()
 			<-r.Context().Done()
 			mu.Lock()
 			stream = nil

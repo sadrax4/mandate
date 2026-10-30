@@ -651,13 +651,7 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	// Phase 3, under payMu again: bookkeeping.
 	s.payMu.Lock()
 	defer s.payMu.Unlock()
-	initial := order.Status
-	if vaulted && initial == store.PaymentCompleted {
-		// PayPal can capture a vault order at creation; the accounting below
-		// (markPaidLocked) must still run exactly once, so start from APPROVED.
-		initial = "APPROVED"
-	}
-	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: initial, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, Vaulted: vaulted, CreatedAt: time.Now()}
+	pay := &store.Payment{ID: order.ID, ProposalID: p.ID, MissionID: p.MissionID, MandateID: p.MandateID, Status: order.Status, Amount: d.Total, Currency: md.Currency, ApproveURL: order.ApproveURL, Mode: s.pp.Mode(), Reserved: true, Vaulted: vaulted, CreatedAt: time.Now()}
 	s.st.PutPayment(pay)
 	_, _ = s.st.UpdateProposal(p.ID, func(pr *store.Proposal) {
 		pr.Status = store.ProposalApproved
@@ -673,7 +667,11 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	}
 
 	// Paid with the saved account: no buyer interaction.
-	s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s) with the PayPal account saved on this mandate; capturing without checkout", order.ID, d.Total, md.Currency, s.pp.Mode()), map[string]any{"order_id": order.ID, "status": order.Status, "vaulted": true})
+	what := "capturing without checkout"
+	if order.Status == store.PaymentCompleted {
+		what = "captured at creation, no checkout"
+	}
+	s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s) with the PayPal account saved on this mandate; %s", order.ID, d.Total, md.Currency, s.pp.Mode(), what), map[string]any{"order_id": order.ID, "status": order.Status, "vaulted": true})
 	if cerr != nil {
 		// Undo the approval so the human can approve again; the next attempt goes through checkout.
 		s.releaseReservation(pay.ID)
@@ -835,17 +833,30 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "payment not found")
 		return
 	}
-	if pay.Status == "COMPLETED" {
+	if pay.Status == store.PaymentCompleted || pay.Status == store.PaymentPartiallyRefunded {
 		// Finish anything PayPal completed that we never accounted for (a
-		// vault order captured at creation, a restart mid-capture), and pick
-		// up an account saved asynchronously after the capture.
-		if order, err := s.pp.GetOrder(r.Context(), pay.ID); err == nil {
-			s.payMu.Lock()
-			s.markPaidLocked(pay.ID, order)
-			s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
-			s.payMu.Unlock()
-			pay, _ = s.st.GetPayment(pay.ID)
+		// restart mid-capture), and pick up an account saved asynchronously
+		// after the capture. Otherwise there is nothing to ask PayPal.
+		wantVault := false
+		if md, err := s.st.GetMandate(pay.MandateID); err == nil && md.SavePaymentMethod && !md.HasSavedPayment() {
+			wantVault = true
 		}
+		if pay.Accounted && !wantVault {
+			writeJSON(w, 200, pay)
+			return
+		}
+		order, err := s.pp.GetOrder(r.Context(), pay.ID)
+		if err != nil {
+			writeErr(w, 502, "PayPal lookup failed: "+err.Error())
+			return
+		}
+		s.payMu.Lock()
+		if order.Status == store.PaymentCompleted {
+			s.markPaidLocked(pay.ID, order)
+		}
+		s.adoptVaultLocked(pay, order.VaultID, order.VaultStatus, order.PayerEmail)
+		s.payMu.Unlock()
+		pay, _ = s.st.GetPayment(pay.ID)
 		writeJSON(w, 200, pay)
 		return
 	}
@@ -893,20 +904,23 @@ func (s *Server) markPaid(payID string, order *paypal.Order) {
 	s.markPaidLocked(payID, order)
 }
 
-// markPaidLocked is markPaid for callers that already hold payMu. It is
-// idempotent on the accounting state: a payment whose proposal is already
-// paid (or refunded, reversed, denied) is left alone, even if PayPal reports
-// the order again.
+// markPaidLocked is markPaid for callers that already hold payMu. It books a
+// completed capture exactly once (Payment.Accounted is the key): the
+// reservation is released, the amount moves to spent, and the proposal and
+// mission become paid when this is still their current order. A capture of
+// an order the proposal has since moved on from (PayPal charged it after we
+// had given it up) is still booked, because the money moved, and flagged for
+// a refund.
 func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	pay, err := s.st.GetPayment(payID)
-	if err != nil {
+	if err != nil || pay.Accounted {
 		return
 	}
 	if store.IsFinalPayment(pay.Status) && pay.Status != store.PaymentCompleted {
 		return // cancelled, voided, expired, refunded or denied: never resurrected
 	}
-	if pr, err := s.st.GetProposal(pay.ProposalID); err == nil && pr.Status == store.ProposalPaid {
-		return // already accounted for
+	if order == nil || order.Status != store.PaymentCompleted {
+		return
 	}
 	amount := order.Amount
 	if amount == 0 {
@@ -914,15 +928,24 @@ func (s *Server) markPaidLocked(payID string, order *paypal.Order) {
 	}
 	s.releaseReservation(payID)
 	_, _ = s.st.UpdatePayment(payID, func(x *store.Payment) {
-		x.Status = "COMPLETED"
+		x.Status = store.PaymentCompleted
 		x.CaptureID = order.CaptureID
 		x.PayerEmail = order.PayerEmail
 		x.Amount = amount
+		x.Accounted = true
 	})
 	_ = s.st.UpdateMandate(pay.MandateID, func(m *mandate.Mandate) error {
 		m.Spent = mandate.Round(m.Spent + amount)
 		return nil
 	})
+	current := true
+	if pr, err := s.st.GetProposal(pay.ProposalID); err == nil && pr.OrderID != "" && pr.OrderID != payID {
+		current = false
+	}
+	if !current {
+		s.st.AddEvent(pay.MissionID, "error", fmt.Sprintf("PayPal captured order %s (%.2f %s) after this proposal had moved on to another order; the amount is counted as spent and should be refunded", payID, amount, pay.Currency), map[string]any{"order_id": payID, "capture_id": order.CaptureID, "amount": amount})
+		return
+	}
 	_, _ = s.st.UpdateProposal(pay.ProposalID, func(pr *store.Proposal) { pr.Status = store.ProposalPaid })
 	_, _ = s.st.UpdateMission(pay.MissionID, func(m *store.Mission) { m.Status = store.MissionPaid })
 	how := ""
@@ -1051,6 +1074,11 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pay.Status == store.PaymentCompleted || pay.Status == store.PaymentPartiallyRefunded { // refreshed return page
+		if !pay.Accounted {
+			if order, err := s.pp.GetOrder(r.Context(), pay.ID); err == nil {
+				s.markPaid(pay.ID, order)
+			}
+		}
 		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment=completed", http.StatusFound)
 		return
 	}
@@ -1146,7 +1174,7 @@ func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "PAYMENT.CAPTURE.COMPLETED":
-		if !store.IsFinalPayment(pay.Status) {
+		if !store.IsFinalPayment(pay.Status) || (pay.Status == store.PaymentCompleted && !pay.Accounted) {
 			order, err := s.pp.GetOrder(r.Context(), orderID)
 			if err == nil && order.Status == store.PaymentCompleted {
 				s.markPaid(pay.ID, order)

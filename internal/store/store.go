@@ -100,6 +100,26 @@ type Mission struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
+// clone returns a deep copy, so a mission handed out by the store (or kept
+// by a caller) never shares pointer fields with the stored one.
+func (m *Mission) clone() Mission {
+	c := *m
+	if m.Suggestion != nil {
+		sg := *m.Suggestion
+		c.Suggestion = &sg
+	}
+	if m.Negotiation != nil {
+		n := *m.Negotiation
+		n.Rounds = append([]NegotiationRound(nil), m.Negotiation.Rounds...)
+		c.Negotiation = &n
+	}
+	if m.NextRunAt != nil {
+		t := *m.NextRunAt
+		c.NextRunAt = &t
+	}
+	return c
+}
+
 // Negotiation is the transcript of a buyer agent and a seller agent
 // settling on a price for a service, inside the buyer's mandate.
 type Negotiation struct {
@@ -167,7 +187,10 @@ type Payment struct {
 	// on the mandate, without a checkout hop.
 	Vaulted bool `json:"vaulted"`
 	// Refunded is the total given back so far (partial refunds accumulate).
-	Refunded  float64   `json:"refunded,omitempty"`
+	Refunded float64 `json:"refunded,omitempty"`
+	// Accounted is set exactly once, when the capture was booked into the
+	// mandate's spent total. It is the idempotency key for paid-marking.
+	Accounted bool      `json:"accounted"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -193,7 +216,7 @@ type state struct {
 }
 
 // currentVersion is bumped when a one-time migration is added to Open.
-const currentVersion = 1
+const currentVersion = 2
 
 // Store is safe for concurrent use. Entity writes (mandates, missions,
 // proposals, payments) are written to the JSON file synchronously, so a
@@ -247,6 +270,22 @@ func Open(path string) (*Store, error) {
 		for _, p := range st.s.Payments {
 			if !IsFinalPayment(p.Status) {
 				p.Reserved = true
+			}
+		}
+	}
+	if st.s.Version < 2 {
+		// Payments written before the Accounted flag: a capture was booked
+		// when the proposal became paid (or was refunded afterwards).
+		for _, p := range st.s.Payments {
+			settled := false
+			if pr, ok := st.s.Proposals[p.ProposalID]; ok {
+				settled = pr.Status == ProposalPaid || pr.Status == ProposalRefunded
+			}
+			switch p.Status {
+			case PaymentPartiallyRefunded, PaymentRefunded, PaymentReversed:
+				p.Accounted = true
+			case PaymentCompleted, PaymentDenied:
+				p.Accounted = settled
 			}
 		}
 	}
@@ -332,7 +371,8 @@ func NewID(prefix string) string {
 func (st *Store) PutMandate(m *mandate.Mandate) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.s.Mandates[m.ID] = m
+	c := *m
+	st.s.Mandates[m.ID] = &c
 	st.persistNow()
 }
 
@@ -380,7 +420,8 @@ func (st *Store) PutMission(m *Mission) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	m.UpdatedAt = time.Now()
-	st.s.Missions[m.ID] = m
+	c := m.clone()
+	st.s.Missions[m.ID] = &c
 	st.persistNow()
 }
 
@@ -391,7 +432,7 @@ func (st *Store) GetMission(id string) (*Mission, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	c := *m
+	c := m.clone()
 	return &c, nil
 }
 
@@ -404,8 +445,10 @@ func (st *Store) UpdateMission(id string, fn func(m *Mission)) (*Mission, error)
 	}
 	fn(m)
 	m.UpdatedAt = time.Now()
+	detached := m.clone() // never keep pointers the caller still mutates
+	*m = detached
 	st.persistNow()
-	c := *m
+	c := m.clone()
 	return &c, nil
 }
 
@@ -417,7 +460,7 @@ func (st *Store) ListMissions(mandateID string) []*Mission {
 		if mandateID != "" && m.MandateID != mandateID {
 			continue
 		}
-		c := *m
+		c := m.clone()
 		out = append(out, &c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -429,7 +472,8 @@ func (st *Store) ListMissions(mandateID string) []*Mission {
 func (st *Store) PutProposal(p *Proposal) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.s.Proposals[p.ID] = p
+	c := *p
+	st.s.Proposals[p.ID] = &c
 	st.persistNow()
 }
 
@@ -478,7 +522,8 @@ func (st *Store) PutPayment(p *Payment) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	p.UpdatedAt = time.Now()
-	st.s.Payments[p.ID] = p
+	c := *p
+	st.s.Payments[p.ID] = &c
 	st.persistNow()
 }
 

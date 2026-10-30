@@ -80,7 +80,7 @@ func TestOpenMigratesLegacyReservations(t *testing.T) {
 	// entity writes are on disk immediately
 	st.PutPayment(&Payment{ID: "D", Status: "CREATED", Amount: 1, Currency: "USD", Reserved: true})
 	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 1`) {
+	if !strings.Contains(string(data), `"D"`) || !strings.Contains(string(data), `"version": 2`) {
 		t.Fatalf("synchronous persistence missing: %s", data)
 	}
 	st.Close()

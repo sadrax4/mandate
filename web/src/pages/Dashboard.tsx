@@ -16,6 +16,7 @@ export default function Dashboard() {
   const [missions, setMissions] = useState<Mission[]>([])
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
+  const [note, setNote] = useState('')
   const [busy, setBusy] = useState('')
   const config = useConfig()
   const [showAll, setShowAll] = useState(false)
@@ -54,23 +55,15 @@ export default function Dashboard() {
   const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
   const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
-  const hasDemo = mandates.some((m) => m.name === 'Desk refresh')
+  // The server creates the demo mandate once and returns it on later clicks.
   const createDemo = async () => {
     setBusy('demo')
     setActionError('')
+    setNote('')
     try {
-      await api.createMandate({
-        name: 'Desk refresh',
-        currency: config?.currency || 'USD',
-        total_budget: 300,
-        max_per_item: 150,
-        auto_approve_under: 40,
-        allowed_categories: ['computers', 'office', 'audio'],
-        blocked_merchants: ['temu.com'],
-        min_rating: 4,
-        save_payment_method: true,
-      })
+      const r = await api.demoMandate()
       await load()
+      if (!r.created) setNote(`The demo mandate "${r.mandate.name}" already exists; it is in the list below.`)
     } catch (e: any) {
       setActionError(e.message)
     } finally {
@@ -86,13 +79,14 @@ export default function Dashboard() {
           <p className="lede">A mandate is the authority you give the agent: a budget, caps and rules. Start a mission under a mandate and the agent researches, compares and proposes. You approve. PayPal pays.</p>
         </div>
         <div className="actions">
-          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo' || hasDemo} title={hasDemo ? 'The demo mandate "Desk refresh" already exists below' : undefined}>
-            {busy === 'demo' ? 'Creating…' : hasDemo ? 'Demo mandate created' : 'Create demo mandate'}
+          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
+            {busy === 'demo' ? 'Creating…' : mandates.some((m) => m.demo) ? 'Open demo mandate' : 'Create demo mandate'}
           </button>
           <a className="btn primary" href="#/mandates/new">New mandate</a>
         </div>
       </div>
       {actionError && <div className="alert bad">{actionError}</div>}
+      {note && <div className="alert warn">{note}</div>}
       {loadError && <div className="alert bad">Could not load the dashboard: {loadError}</div>}
 
       {!guideHidden && (

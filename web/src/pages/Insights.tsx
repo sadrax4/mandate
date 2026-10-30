@@ -105,7 +105,7 @@ export default function InsightsPage() {
           { field: 'mandate', headerName: 'Mandate', minWidth: 130, filter: 'agTextColumnFilter', floatingFilter: true },
           { field: 'goal', headerName: 'Mission goal', minWidth: 220, flex: 2, tooltipField: 'goal' },
           { field: 'order_id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'order_id' },
-          { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id', hide: true },
+          { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
           { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
         ],
       },
@@ -150,7 +150,7 @@ export default function InsightsPage() {
           items.length > 0 ? (
             <div className="toolbar">
               <input value={quick} onChange={(e) => { setQuick(e.target.value); gridApi.current?.setGridOption('quickFilterText', e.target.value) }} placeholder="Quick filter: product, merchant, mandate…" aria-label="Quick filter for purchased items" />
-              <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-items.csv' })}>Export CSV</button>
+              <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-items.csv', allColumns: true })}>Export CSV</button>
             </div>
           ) : undefined
         }

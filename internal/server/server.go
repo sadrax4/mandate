@@ -77,6 +77,7 @@ type Server struct {
 	inflight map[string]inflightOrder
 	stop     chan struct{}
 	stopOnce sync.Once
+	demoMu   sync.Mutex
 
 	mcp mcpState
 }
@@ -135,6 +136,7 @@ func (s *Server) routes() {
 
 	m.HandleFunc("GET /api/mandates", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.st.ListMandates()) })
 	m.HandleFunc("POST /api/mandates", s.handleCreateMandate)
+	m.HandleFunc("POST /api/mandates/demo", s.handleDemoMandate)
 	m.HandleFunc("GET /api/mandates/{id}", s.handleGetMandate)
 	m.HandleFunc("POST /api/mandates/{id}/forget-payment", s.handleForgetPayment)
 
@@ -208,6 +210,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	in.ID = store.NewID("mnd")
 	in.Spent, in.Reserved = 0, 0
 	in.VaultID, in.VaultPayer, in.VaultedAt = "", "", nil // only a real checkout can save an account
+	in.Demo = false
 	in.CreatedAt = time.Now()
 	in.AllowedCategories = cleanList(in.AllowedCategories)
 	in.BlockedMerchants = cleanList(in.BlockedMerchants)
@@ -217,6 +220,30 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.PutMandate(&in)
 	writeJSON(w, 201, in)
+}
+
+// handleDemoMandate creates the dashboard's demo mandate once; later calls
+// return the existing one (201 when created, 200 when it already existed).
+func (s *Server) handleDemoMandate(w http.ResponseWriter, _ *http.Request) {
+	s.demoMu.Lock()
+	defer s.demoMu.Unlock()
+	for _, m := range s.st.ListMandates() {
+		if m.Demo {
+			writeJSON(w, 200, map[string]any{"mandate": m, "created": false})
+			return
+		}
+	}
+	md := &mandate.Mandate{
+		ID: store.NewID("mnd"), Name: "Desk refresh", Currency: s.cfg.Currency, TotalBudget: 300, MaxPerItem: 150, AutoApproveUnder: 40,
+		AllowedCategories: []string{"computers", "office", "audio"}, BlockedMerchants: []string{"temu.com"}, MinRating: 4, SavePaymentMethod: true,
+		Demo: true, CreatedAt: time.Now(),
+	}
+	if err := md.Validate(); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.st.PutMandate(md)
+	writeJSON(w, 201, map[string]any{"mandate": md, "created": true})
 }
 
 // handleForgetPayment revokes the saved PayPal account on a mandate: the

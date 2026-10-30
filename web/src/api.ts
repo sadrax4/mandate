@@ -16,6 +16,7 @@ export type Mandate = {
   vault_id?: string
   vault_payer?: string
   vaulted_at?: string
+  demo?: boolean
 }
 
 export type NegotiationRound = { round: number; party: string; move: string; price?: number; message: string; at: string }
@@ -200,6 +201,8 @@ export const api = {
   categories: () => req<string[]>('/api/categories'),
   mandates: () => req<Mandate[]>('/api/mandates'),
   createMandate: (m: Partial<Mandate>) => req<Mandate>('/api/mandates', { method: 'POST', body: JSON.stringify(m) }),
+  /** Creates the demo mandate once; a later call returns the existing one. */
+  demoMandate: () => req<{ mandate: Mandate; created: boolean }>('/api/mandates/demo', { method: 'POST' }),
   missions: () => req<Mission[]>('/api/missions'),
   mission: (id: string) => req<MissionDetail>(`/api/missions/${id}`),
   createMission: (mandateId: string, goal: string, repeatDays = 0, kind = 'buy') =>

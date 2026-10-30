@@ -1812,3 +1812,27 @@ func TestRejectWithdrawsTheLiveOrderOfAPendingProposal(t *testing.T) {
 		t.Fatalf("withdrawn order captured: %+v", pay)
 	}
 }
+
+func TestDemoMandateIsCreatedOnce(t *testing.T) {
+	e := newEnv(t)
+	var a, b map[string]any
+	if code := e.post("/api/mandates/demo", nil, &a); code != 201 || a["created"] != true {
+		t.Fatalf("first: %d %v", code, a)
+	}
+	if code := e.post("/api/mandates/demo", nil, &b); code != 200 || b["created"] != false {
+		t.Fatalf("second: %d %v", code, b)
+	}
+	if a["mandate"].(map[string]any)["id"] != b["mandate"].(map[string]any)["id"] {
+		t.Fatal("a second click created another demo mandate")
+	}
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Mine", "total_budget": 100, "demo": true}, &md)
+	if md["demo"] == true {
+		t.Fatal("the demo flag must not be settable through the API")
+	}
+	var all []map[string]any
+	e.get("/api/mandates", &all)
+	if len(all) != 2 {
+		t.Fatalf("mandates: %d", len(all))
+	}
+}

@@ -46,7 +46,7 @@ export default function Ledger() {
   const totals = useMemo(() => {
     const completed = rows.filter((r) => r.status === 'COMPLETED' || r.status === 'PARTIALLY_REFUNDED')
     // open: PayPal has not taken the money yet (waiting for the buyer, a retry, or a pending capture)
-    const open = rows.filter((r) => !isFinalPayment(r.status) || r.status === 'PENDING')
+    const open = rows.filter((r) => !isFinalPayment(r.status))
     return {
       count: rows.length,
       completed: completed.length,
@@ -56,6 +56,7 @@ export default function Ledger() {
     }
   }, [rows])
 
+  const [details, setDetails] = useState(false) // payer and environment columns
   const cols = useMemo<ColDef<LedgerRow>[]>(
     () => [
       { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
@@ -67,10 +68,10 @@ export default function Ledger() {
       { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 110 },
       { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id' },
       { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
-      { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: true },
-      { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: true },
+      { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: !details },
+      { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: !details },
     ],
-    [],
+    [details],
   )
 
   return (
@@ -92,9 +93,14 @@ export default function Ledger() {
         title="Orders"
         action={
           rows.length > 0 ? (
-            <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-ledger.csv' })}>
-              Export CSV
-            </button>
+            <div className="toolbar">
+              <label className="check" style={{ fontSize: 13 }}>
+                <input type="checkbox" checked={details} onChange={(e) => setDetails(e.target.checked)} /> More columns
+              </label>
+              <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-ledger.csv', allColumns: true })}>
+                Export CSV
+              </button>
+            </div>
           ) : undefined
         }
       >
@@ -114,7 +120,7 @@ export default function Ledger() {
             paginationPageSize={25}
           />
         )}
-        {rows.length > 0 && <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Payer and environment columns are hidden by default: open a column menu to show them. Click a row to open its mission.</p>}
+        {rows.length > 0 && <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Click a row to open its mission. The CSV export always includes every column.</p>}
       </Card>
 
       {mcp?.enabled && (

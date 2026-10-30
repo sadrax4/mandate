@@ -43,6 +43,9 @@ type Mandate struct {
 	VaultID    string     `json:"vault_id,omitempty"`
 	VaultPayer string     `json:"vault_payer,omitempty"`
 	VaultedAt  *time.Time `json:"vaulted_at,omitempty"`
+	// Demo marks the one mandate the dashboard's "Create demo mandate"
+	// button creates; a second click returns it instead of making another.
+	Demo bool `json:"demo,omitempty"`
 }
 
 // HasSavedPayment reports whether a saved PayPal account can pay for carts

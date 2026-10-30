@@ -108,10 +108,11 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
   }, [id])
 
   // Follow the log while the agent works; a finished mission opens at the top so the story reads in order.
+  const running = detail?.mission.status === 'running'
   useEffect(() => {
     const el = timelineRef.current
-    if (el && statusRef.current === 'running') el.scrollTop = el.scrollHeight
-  }, [events.length])
+    if (el && running) el.scrollTop = el.scrollHeight
+  }, [events.length, running])
 
   // Coming back from PayPal with the browser's back button can restore this page from
   // the cache with "Creating PayPal order…" still showing: clear it.
@@ -242,7 +243,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
 
   const banner = params.get('payment')
   if (!detail || !mission) return <div className="page">{loadErr ? <div className="alert bad">{loadErr}</div> : <Empty>Loading mission…</Empty>}</div>
-  const visibleEvents = events.filter((ev) => ev.type !== 'tool_result' || ev.data?.error)
+  const visibleEvents = events.filter((ev) => (ev.type !== 'tool_result' && ev.type !== 'mcp_tool_result') || ev.data?.error)
 
   const unpaidOrder = latest?.status === 'approved' && payment && payment.proposal_id === latest.id && !isFinalPayment(payment.status) && !isCaptured(payment.status)
   const canDecide = latest && (latest.status === 'pending_approval' || latest.status === 'auto_approved' || unpaidOrder) && mission.status !== 'running'

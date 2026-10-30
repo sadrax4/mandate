@@ -59,18 +59,31 @@ type CreateOrderRequest struct {
 
 // Order is the normalised view of a PayPal order.
 type Order struct {
-	ID         string  `json:"id"`
-	Status     string  `json:"status"`
-	ApproveURL string  `json:"approve_url,omitempty"`
-	CaptureID  string  `json:"capture_id,omitempty"`
-	Amount     float64 `json:"amount"`
-	Currency   string  `json:"currency"`
-	PayerEmail string  `json:"payer_email,omitempty"`
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	ApproveURL string `json:"approve_url,omitempty"`
+	CaptureID  string `json:"capture_id,omitempty"`
+	// CaptureStatus is the capture's own status (COMPLETED, PENDING,
+	// DECLINED, ...). PayPal reports the order COMPLETED once a capture was
+	// attempted, so the capture status says whether money moved.
+	CaptureStatus string  `json:"capture_status,omitempty"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency"`
+	PayerEmail    string  `json:"payer_email,omitempty"`
 	// VaultID and VaultStatus describe the saved payment method PayPal
 	// returned for this order (status VAULTED once the token is usable).
 	VaultID     string          `json:"vault_id,omitempty"`
 	VaultStatus string          `json:"vault_status,omitempty"`
 	Raw         json.RawMessage `json:"-"`
+}
+
+// Captured reports whether the order's money actually moved: the order is
+// COMPLETED and its capture is not pending, declined or failed.
+func (o *Order) Captured() bool {
+	if o == nil || o.Status != "COMPLETED" {
+		return false
+	}
+	return o.CaptureStatus == "" || o.CaptureStatus == "COMPLETED" || o.CaptureStatus == "REFUNDED" || o.CaptureStatus == "PARTIALLY_REFUNDED"
 }
 
 // Client is implemented by the real API client and the Mock.
@@ -464,6 +477,7 @@ func parseOrder(raw json.RawMessage) (*Order, error) {
 		if len(pu.Payments.Captures) > 0 {
 			c := pu.Payments.Captures[0]
 			out.CaptureID = c.ID
+			out.CaptureStatus = c.Status
 			if c.Amount.Value != "" {
 				out.Amount, _ = strconv.ParseFloat(c.Amount.Value, 64)
 				out.Currency = c.Amount.CurrencyCode

@@ -43,6 +43,9 @@ const (
 	PaymentReversed          = "REVERSED"
 	PaymentDenied            = "DENIED"
 	PaymentCaptureFailed     = "CAPTURE_FAILED"
+	// PaymentPending is a capture PayPal has accepted but not completed yet
+	// (an eCheck or a risk review); it books when PayPal completes it.
+	PaymentPending = "PENDING"
 )
 
 // IsFinalPayment reports whether a payment status can never become payable
@@ -599,9 +602,39 @@ func (st *Store) UpdatePayment(id string, fn func(p *Payment)) (*Payment, error)
 	}
 	fn(p)
 	p.UpdatedAt = time.Now()
+	detached := p.clone() // never keep slices the caller still mutates
+	*p = detached
 	st.persistNow()
 	c := p.clone()
 	return &c, nil
+}
+
+// SumReserved is the total still reserved by the mandate's payment rows.
+// It is the one place that defines what counts as reserved.
+func (st *Store) SumReserved(mandateID string) float64 {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	total := 0.0
+	for _, p := range st.s.Payments {
+		if p.MandateID == mandateID && p.Reserved {
+			total += p.Amount
+		}
+	}
+	return total
+}
+
+// LivePaymentFor returns the payment row of a proposal that can still be
+// paid (created or approved, not final), if any.
+func (st *Store) LivePaymentFor(proposalID string) (*Payment, bool) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	for _, p := range st.s.Payments {
+		if p.ProposalID == proposalID && !IsFinalPayment(p.Status) {
+			c := p.clone()
+			return &c, true
+		}
+	}
+	return nil, false
 }
 
 func (st *Store) ListPayments() []*Payment {

@@ -21,6 +21,10 @@ type Mock struct {
 	// OnCreate, when set, runs during CreateOrder before the order exists
 	// (tests use it to change state while PayPal is "slow").
 	OnCreate func(req CreateOrderRequest)
+	// NextCaptureStatus, when set, is the status of the next capture
+	// (DECLINED, PENDING, ...) instead of COMPLETED; PayPal still reports
+	// the order itself as COMPLETED. It is consumed by one capture.
+	NextCaptureStatus string
 
 	mu     sync.Mutex
 	orders map[string]*mockOrder
@@ -151,6 +155,10 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 	}
 	o.Status = "COMPLETED"
 	o.CaptureID = "CAP" + o.ID[4:]
+	o.CaptureStatus = "COMPLETED"
+	if m.NextCaptureStatus != "" {
+		o.CaptureStatus, m.NextCaptureStatus = m.NextCaptureStatus, ""
+	}
 	if o.StoreInVault && o.VaultID == "" {
 		// The buyer consented at checkout; PayPal returns the saved account with the capture.
 		o.VaultID = "VLT" + o.ID[4:]
@@ -166,6 +174,16 @@ func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
 // the tests send.
 func (m *Mock) VerifyWebhook(_ context.Context, _ string, h http.Header, _ []byte) (bool, error) {
 	return h.Get("Paypal-Transmission-Sig") == "mock", nil
+}
+
+// SetCaptureStatus changes a captured order's capture status, as PayPal does
+// when a pending capture completes.
+func (m *Mock) SetCaptureStatus(orderID, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if o, ok := m.orders[orderID]; ok && o.CaptureID != "" {
+		o.CaptureStatus = status
+	}
 }
 
 // GetOrder implements Client.

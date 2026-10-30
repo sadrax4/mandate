@@ -99,20 +99,28 @@ func (e *env) get(path string, out any) int {
 
 func (e *env) waitMission(id, status string) map[string]any {
 	e.t.Helper()
+	return e.waitMissionOneOf(id, status)
+}
+
+// waitMissionOneOf polls until the mission reaches one of the statuses.
+func (e *env) waitMissionOneOf(id string, statuses ...string) map[string]any {
+	e.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var out map[string]any
 		e.get("/api/missions/"+id, &out)
 		m := out["mission"].(map[string]any)
-		if m["status"] == status {
-			return out
+		for _, want := range statuses {
+			if m["status"] == want {
+				return out
+			}
 		}
 		if m["status"] == store.MissionFailed {
 			e.t.Fatalf("mission failed: %v", m["error"])
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	e.t.Fatalf("mission %s never reached %s", id, status)
+	e.t.Fatalf("mission %s never reached %v", id, statuses)
 	return nil
 }
 
@@ -1234,22 +1242,14 @@ func TestInFlightApprovalKeepsItsReservationWhenAnotherOrderSettles(t *testing.T
 // pendingProposalAllowingBlock starts a mission and returns its first proposal
 // id, or "" when the agent could not propose inside the remaining budget.
 func (e *env) pendingProposalAllowingBlock(mandateID string) (string, string) {
+	e.t.Helper()
 	var ms map[string]any
 	e.post("/api/missions", map[string]any{"mandate_id": mandateID, "goal": "aeropress coffee maker"}, &ms)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var out map[string]any
-		e.get("/api/missions/"+ms["id"].(string), &out)
-		st := out["mission"].(map[string]any)["status"]
-		if st == store.MissionAwaitingApproval {
-			return ms["id"].(string), out["proposals"].([]any)[0].(map[string]any)["id"].(string)
-		}
-		if st == store.MissionNoProposal || st == store.MissionFailed {
-			return ms["id"].(string), ""
-		}
-		time.Sleep(50 * time.Millisecond)
+	out := e.waitMissionOneOf(ms["id"].(string), store.MissionAwaitingApproval, store.MissionNoProposal)
+	if out["mission"].(map[string]any)["status"] != store.MissionAwaitingApproval {
+		return ms["id"].(string), ""
 	}
-	return ms["id"].(string), ""
+	return ms["id"].(string), out["proposals"].([]any)[0].(map[string]any)["id"].(string)
 }
 
 func TestProposalChangedWhileOrderWasBeingCreated(t *testing.T) {
@@ -1371,4 +1371,180 @@ func TestDeniedCaptureVoidsOnlyAnOpenOrder(t *testing.T) {
 	if pay2.Status != store.PaymentDenied || len(pay2.PendingRefunds) != 0 {
 		t.Fatalf("redelivered denial changed the row: %+v", pay2)
 	}
+}
+
+func (e *env) webhook(body string) {
+	e.t.Helper()
+	req, _ := http.NewRequest("POST", e.ts.URL+"/paypal/webhook", strings.NewReader(body))
+	req.Header.Set("Paypal-Transmission-Sig", "mock")
+	resp, err := e.cli.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func (e *env) refundWebhook(orderID, refundID, status, amount string) {
+	e.t.Helper()
+	e.webhook(`{"id":"WH-` + refundID + `","event_type":"PAYMENT.CAPTURE.` + status + `","resource_type":"refund","resource":{"id":"` + refundID + `","status":"COMPLETED","amount":{"currency_code":"USD","value":"` + amount + `"},"supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`)
+}
+
+func TestDeclinedCaptureIsNeverBookedBySync(t *testing.T) {
+	// PayPal reports the order COMPLETED after a capture attempt even when
+	// the capture itself was DECLINED; only the capture status says whether
+	// money moved.
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	_, _ = e.pp.Approve(orderID, true)
+	e.pp.NextCaptureStatus = "DECLINED"
+	if _, err := e.pp.CaptureOrder(context.Background(), orderID); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.markRefunded(orderID, store.PaymentDenied, 0, "") // the DENIED webhook voids the row
+	var synced map[string]any
+	for i := 0; i < 2; i++ {
+		if code := e.post("/api/payments/"+orderID+"/sync", nil, &synced); code != 200 {
+			t.Fatalf("sync: %d %v", code, synced)
+		}
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Accounted || pay.Status != store.PaymentDenied || spent != 0 || reserved != 0 {
+		t.Fatalf("declined capture must not be booked: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	ms, _ := e.st.GetMission(msID)
+	if ms.Status == store.MissionPaid {
+		t.Fatal("mission must not read paid")
+	}
+}
+
+func TestPendingCaptureBooksOnlyWhenCompleted(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.pp.NextCaptureStatus = "PENDING" // an eCheck: the buyer approved, PayPal has not settled
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Accounted || pay.Status != store.PaymentPending || spent != 0 || reserved != pay.Amount {
+		t.Fatalf("pending capture must stay reserved and unbooked: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	// PayPal completes the capture later and says so
+	e.pp.SetCaptureStatus(orderID, "COMPLETED")
+	e.webhook(`{"id":"WH-done","event_type":"PAYMENT.CAPTURE.COMPLETED","resource_type":"capture","resource":{"id":"` + pay.CaptureID + `","status":"COMPLETED","supplementary_data":{"related_ids":{"order_id":"` + orderID + `"}}}}`)
+	e.waitMission(msID, store.MissionPaid)
+	pay, _ = e.st.GetPayment(orderID)
+	spent, reserved = e.mandateNumbers(mdID)
+	if !pay.Accounted || pay.Status != store.PaymentCompleted || spent != pay.Amount || reserved != 0 {
+		t.Fatalf("completed capture not booked: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+}
+
+func TestParkedFullRefundLeavesProposalRefunded(t *testing.T) {
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	pay, _ := e.st.GetPayment(orderID)
+	e.refundWebhook(orderID, "R-full", "REFUNDED", fmt.Sprintf("%.2f", pay.Amount))
+	var out map[string]any
+	e.get("/api/missions/"+msID, &out)
+	e.payThroughMockCheckout(out["payments"].([]any)[0].(map[string]any)["approve_url"].(string))
+	e.waitMission(msID, store.MissionRefunded)
+	pay, _ = e.st.GetPayment(orderID)
+	pr, _ := e.st.GetProposal(pay.ProposalID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if pay.Status != store.PaymentRefunded || pr.Status != store.ProposalRefunded || spent != 0 || reserved != 0 || len(pay.PendingRefunds) != 0 {
+		t.Fatalf("parked full refund: pay=%+v proposal=%s spent=%v reserved=%v", pay, pr.Status, spent, reserved)
+	}
+}
+
+func TestLateCaptureAlreadyRefundedIsNotFlagged(t *testing.T) {
+	// Withdrawn order, captured anyway, refunded by the merchant; the refund
+	// webhook lands before the capture one. No "refund required" flag.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	msID, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	var rj map[string]any
+	e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "no"}, &rj)
+	_, _ = e.pp.Approve(orderID, true)
+	captured, err := e.pp.CaptureOrder(context.Background(), orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.refundWebhook(orderID, "R-late", "REFUNDED", fmt.Sprintf("%.2f", captured.Amount))
+	e.srv.markPaid(orderID, captured)
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	if !pay.Accounted || pay.Status != store.PaymentRefunded || spent != 0 || reserved != 0 {
+		t.Fatalf("late capture + early refund: %+v spent=%v reserved=%v", pay, spent, reserved)
+	}
+	var detail map[string]any
+	e.get("/api/missions/"+msID, &detail)
+	for _, ev := range detail["events"].([]any) {
+		if d, ok := ev.(map[string]any)["data"].(map[string]any); ok && d["refund_required"] == true {
+			t.Fatal("a capture that was already refunded must not be flagged")
+		}
+	}
+	pr, _ := e.st.GetProposal(pid)
+	if pr.Status != store.ProposalRejected {
+		t.Fatalf("proposal must stay rejected, got %s", pr.Status)
+	}
+}
+
+func TestInterruptedApprovalReusesTheOrder(t *testing.T) {
+	// A crash between writing the order row and the proposal leaves a live
+	// order for a pending proposal; approving again must adopt it, not
+	// reserve twice.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	mdID := md["id"].(string)
+	msID, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	orderID := ap["payment"].(map[string]any)["id"].(string)
+	_, _ = e.st.UpdateProposal(pid, func(p *store.Proposal) { p.Status = store.ProposalPending; p.OrderID = "" })
+	_, _ = e.st.UpdateMission(msID, func(m *store.Mission) { m.Status = store.MissionAwaitingApproval; m.OrderID = "" })
+	var ap2 map[string]any
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap2); code != 200 {
+		t.Fatalf("approve again: %d %v", code, ap2)
+	}
+	if got := ap2["payment"].(map[string]any)["id"]; got != orderID {
+		t.Fatalf("a second order was created: %v (wanted %s)", got, orderID)
+	}
+	_, reserved := e.mandateNumbers(mdID)
+	if reserved != 39.95 {
+		t.Fatalf("reserved twice: %v", reserved)
+	}
+	pr, _ := e.st.GetProposal(pid)
+	if pr.Status != store.ProposalApproved || pr.OrderID != orderID {
+		t.Fatalf("proposal not repaired: %+v", pr)
+	}
+}
+
+func TestRejectApprovedProposalWithoutOrder(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Coffee", "total_budget": 100}, &md)
+	_, pid := e.pendingProposal(md["id"].(string))
+	_, _ = e.st.UpdateProposal(pid, func(p *store.Proposal) { p.Status = store.ProposalApproved; p.OrderID = "" })
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+pid+"/reject", map[string]any{"reason": "changed my mind"}, &rj); code != 200 {
+		t.Fatalf("reject: %d %v", code, rj)
+	}
+	pr, _ := e.st.GetProposal(pid)
+	if pr.Status != store.ProposalRejected {
+		t.Fatalf("got %s", pr.Status)
+	}
+}
+
+func TestServerCloseIsIdempotent(t *testing.T) {
+	e := newEnv(t)
+	e.srv.Close()
+	e.srv.Close()
 }

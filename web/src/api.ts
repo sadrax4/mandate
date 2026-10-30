@@ -245,6 +245,7 @@ export const STATUS_LABEL: Record<string, string> = {
   CREATED: 'Created',
   CANCELLED: 'Cancelled',
   CAPTURE_FAILED: 'Capture failed',
+  PENDING: 'Capture pending',
   VOIDED: 'Voided',
   EXPIRED: 'Expired',
   REFUNDED: 'Refunded',
@@ -273,6 +274,7 @@ export const statusTone = (s: string) => {
     case 'awaiting_payment':
     case 'PAYER_ACTION_REQUIRED':
     case 'CREATED':
+    case 'PENDING':
     case 'PARTIALLY_REFUNDED':
       return 'warn'
     case 'failed':

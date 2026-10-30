@@ -139,6 +139,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+	srv.Close()
 	st.Close()
 	fmt.Println("bye")
 }

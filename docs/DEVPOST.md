@@ -51,8 +51,8 @@ Agentic commerce has a trust problem. Either the agent holds your wallet, or you
 go, react, typescript, ag-grid, paypal-orders-api, claude, anthropic-sdk, channel3, vite, docker, render, playwright
 
 ## Try it out links
-- GitHub repo: <repo URL>
-- Live demo: <Render URL> (offline demo mode unless keys are configured)
+- GitHub repo: https://github.com/sadrax4/mandate
+- Live demo: http://23.27.20.150:8080 (PayPal sandbox, Claude Opus 5.5, Channel3 catalog; sandbox buyer login is in the README)
 
 ## AI tools disclosure (Devpost asks for this)
 Claude Code (Anthropic) was used as a pair programmer for the implementation, directed and reviewed by the author. Inside the product, the shopping agent runs on Claude through the Anthropic API.

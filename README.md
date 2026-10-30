@@ -19,6 +19,10 @@ To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-
 
 *A real run on the live demo: the agent searched Channel3, picked a Keychron keyboard from bestbuy.com, explained what it rejected and why, and the PayPal sandbox order was captured after human approval.*
 
+![Seventeen seconds of the offline demo: goal typed, agent proposes, human approves, simulated PayPal checkout, captured, insights](docs/demo.gif)
+
+*The same flow in offline demo mode, no keys needed: `go run ./cmd/mandate` and open http://localhost:8080.*
+
 ## Who it is for
 
 - **People who delegate.** Anyone who would hand a trusted assistant a budget and a list: "replace my broken headphones, under $150, not from that store". Mandate lets an agent do the legwork while the human keeps the decision and the wallet.

@@ -152,3 +152,25 @@ func TestProposalCopiesShareNothing(t *testing.T) {
 		t.Fatal("stored mandate shares the caller's list")
 	}
 }
+
+func TestMigrationLetsTheDemoMandateBuyServices(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.json")
+	old := `{"version":3,"mandates":{"mnd_d":{"id":"mnd_d","name":"Desk refresh","currency":"USD","total_budget":300,"max_per_item":150,"auto_approve_under":40,"allowed_categories":["computers","office","audio"],"demo":true},"mnd_u":{"id":"mnd_u","name":"Mine","currency":"USD","total_budget":50,"allowed_categories":["computers"]}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	d, _ := st.GetMandate("mnd_d")
+	u, _ := st.GetMandate("mnd_u")
+	if len(d.AllowedCategories) != 4 || d.AllowedCategories[3] != "services" {
+		t.Fatalf("demo mandate categories: %v", d.AllowedCategories)
+	}
+	if len(u.AllowedCategories) != 1 {
+		t.Fatalf("a user's mandate must not change: %v", u.AllowedCategories)
+	}
+}

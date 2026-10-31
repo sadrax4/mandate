@@ -264,7 +264,7 @@ type state struct {
 }
 
 // currentVersion is bumped when a one-time migration is added to Open.
-const currentVersion = 3
+const currentVersion = 4
 
 // Store is safe for concurrent use. Entity writes (mandates, missions,
 // proposals, payments) are written to the JSON file synchronously, so a
@@ -365,6 +365,25 @@ func Open(path string) (*Store, error) {
 		}
 		if demo != nil {
 			demo.Demo = true
+		}
+	}
+	if st.s.Version < 4 {
+		// The demo mandate learned to buy negotiated services; a demo mandate
+		// created by an earlier build gets the category too, so the headline
+		// negotiation works on it without a detour through a suggestion.
+		for _, m := range st.s.Mandates {
+			if !m.Demo || len(m.AllowedCategories) == 0 {
+				continue
+			}
+			has := false
+			for _, c := range m.AllowedCategories {
+				if c == "services" {
+					has = true
+				}
+			}
+			if !has {
+				m.AllowedCategories = append(m.AllowedCategories, "services")
+			}
 		}
 	}
 	migrated := st.s.Version != currentVersion

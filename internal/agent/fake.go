@@ -7,31 +7,52 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Fake is a scripted provider used by the tests and by the offline demo mode
 // (LLM_PROVIDER=fake). It behaves like a disciplined agent: it searches once
 // per item in the goal, checks the mandate, repairs budget problems by picking
 // cheaper items, and proposes. It never talks to the network.
-type Fake struct{}
+type Fake struct {
+	// Delay is an optional pause before every tool call, so the offline demo
+	// can be watched while the mission runs (FAKE_AGENT_DELAY). Zero in tests.
+	Delay time.Duration
+}
 
 // Name implements Provider.
 func (Fake) Name() string { return "fake" }
 
 // NewSession implements Provider.
-func (Fake) NewSession(system string) Session {
+func (f Fake) NewSession(system string) Session {
 	switch {
 	case strings.HasPrefix(system, buyerMarker):
-		return &fakeNegotiator{role: "buyer", limit: promptNumber(system, "Your hard limit is")}
+		return &fakeNegotiator{role: "buyer", limit: promptNumber(system, "Your hard limit is"), delay: f.Delay}
 	case strings.HasPrefix(system, sellerMarker):
-		return &fakeNegotiator{role: "seller", floor: promptNumber(system, "Your absolute floor is"), list: promptNumber(system, "Your asking price is")}
+		return &fakeNegotiator{role: "seller", floor: promptNumber(system, "Your absolute floor is"), list: promptNumber(system, "Your asking price is"), delay: f.Delay}
 	}
-	return &fakeSession{}
+	return &fakeSession{delay: f.Delay}
 }
 
 type fakeSession struct {
 	goal     string
 	lastPick []string
+	delay    time.Duration
+}
+
+// pause waits for d unless the mission is cancelled first.
+func pause(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 var (
@@ -66,6 +87,9 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 		t, ok := byName[name]
 		if !ok {
 			return "", fmt.Errorf("fake: no tool %s", name)
+		}
+		if err := pause(ctx, s.delay); err != nil {
+			return "", err
 		}
 		b, _ := json.Marshal(in)
 		emit(Event{Type: "tool_call", Message: name, Data: map[string]any{"tool": name, "input": json.RawMessage(b)}})
@@ -361,6 +385,7 @@ type fakeNegotiator struct {
 	limit, floor, list   float64
 	lastOffer, lastPrice float64
 	round                int
+	delay                time.Duration
 }
 
 var reMoney = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)`)
@@ -382,6 +407,9 @@ func (n *fakeNegotiator) Send(ctx context.Context, userText string, tools []Tool
 	call := func(name string, in map[string]any) {
 		for _, t := range tools {
 			if t.Name == name {
+				if pause(ctx, n.delay) != nil {
+					return
+				}
 				b, _ := json.Marshal(in)
 				emit(Event{Type: "tool_call", Message: name, Data: map[string]any{"tool": name, "input": json.RawMessage(b)}})
 				_, _ = t.Run(ctx, b)

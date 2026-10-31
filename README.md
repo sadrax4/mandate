@@ -57,7 +57,7 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 
 | | |
 |---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) Mandates with live budget bars and one-line missions | ![Paid](docs/screenshots/mission-paid.png) Captured payment with PayPal order and capture IDs |
+| ![Dashboard](docs/screenshots/dashboard.png) Dashboard: one goal bar, what needs approval, mandates with budget bars, standing orders, recent missions | ![Paid](docs/screenshots/mission-paid.png) Captured payment with PayPal order and capture IDs |
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
 | ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after payment |
 | ![Spending insights](docs/screenshots/insights.png) Spending insights: AG Charts over the ledger, AG Grid of every item bought | ![Suggestion](docs/screenshots/suggestion.png) A goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries |
@@ -114,6 +114,7 @@ To test against a real product catalog, add `CHANNEL3_API_KEY` (free tier at [tr
 | `PAYPAL_MCP` | `auto` | Order assistant on PayPal's MCP server: `auto` (on when PayPal credentials and the Anthropic provider are configured), `on`, `off` |
 | `PAYPAL_MCP_URL` | PayPal's SSE endpoint for the environment | Override the MCP endpoint handed to the Anthropic MCP connector (e.g. `https://mcp.sandbox.paypal.com/http`) |
 | `LLM_PROVIDER` | `anthropic` if a key is set, else `fake` | `anthropic` or `fake` (scripted agent for tests and demos) |
+| `FAKE_AGENT_DELAY` | unset | offline demo only: pause before each scripted tool call (e.g. `700ms`) so a mission can be watched while it runs |
 | `ANTHROPIC_API_KEY` | | Claude API key from the Anthropic Console |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | | Optional: an Anthropic-compatible gateway and bearer token, e.g. `https://openrouter.ai/api` with an OpenRouter key and `ANTHROPIC_MODEL=anthropic/claude-opus-5.5`. Anthropic-only extras (refusal fallback, effort) are skipped automatically |
 | `ANTHROPIC_MODEL` | `claude-opus-5-5` | Any current Claude model ID |

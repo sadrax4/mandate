@@ -54,7 +54,7 @@ export default function MandateForm() {
       <div className="page-head">
         <div>
           <h1>New mandate</h1>
-          <p className="lede">Everything the agent proposes is checked against these rules before a human sees it, and again at approval time. In the words of PayPal&apos;s Agent Payments Protocol this is an <b>intent mandate</b>: the conditions under which the agent may act when you are not present. Every cart you approve by hand is a <b>cart mandate</b>.</p>
+          <p className="lede">Everything the agent proposes is checked against these rules before you see it, and again at approval.</p>
         </div>
       </div>
       <form onSubmit={submit}>
@@ -90,15 +90,15 @@ export default function MandateForm() {
           <label className="check">
             <input type="checkbox" checked={savePayment} onChange={(e) => setSavePayment(e.target.checked)} />
             <span>
-              Save my PayPal account at the first checkout (PayPal vault). After that, carts I approve are paid with one click and carts under the
-              auto-approve threshold are paid with no click at all, always inside this mandate.
+              Save my PayPal account at the first checkout
+              <span className="sub">One-click approvals afterwards; carts under the auto-approve threshold pay with no click, always inside this mandate.</span>
             </span>
           </label>
         </Card>
         <Card title="Rules" className="mt">
           <div className="field">
             <span>Allowed categories (none selected = any)</span>
-            <div className="checks">
+            <div className="check-chips">
               {categories.map((c) => (
                 <label key={c} className={`check-chip ${allowed.includes(c) ? 'on' : ''}`}>
                   <input type="checkbox" checked={allowed.includes(c)} onChange={() => toggle(c)} />
@@ -117,6 +117,7 @@ export default function MandateForm() {
           <a className="btn ghost" href="#/">Cancel</a>
           <button className="btn primary" disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Create mandate'}</button>
         </div>
+        <p className="footnote">In the words of PayPal's Agent Payments Protocol this is an <b>intent mandate</b>: the conditions under which the agent may act when you are not present. Every cart you approve by hand is a <b>cart mandate</b>.</p>
       </form>
     </div>
   )

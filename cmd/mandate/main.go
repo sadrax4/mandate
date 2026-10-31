@@ -89,13 +89,13 @@ func main() {
 		}
 		provider = agent.NewAnthropic(anthropicOpts)
 	case "fake":
-		provider = agent.Fake{}
+		provider = agent.Fake{Delay: fakeDelay()}
 	case "":
 		if hasKey {
 			provider = agent.NewAnthropic(anthropicOpts)
 		} else {
 			log.Println("no Anthropic key set: using the scripted offline agent (LLM_PROVIDER=fake)")
-			provider = agent.Fake{}
+			provider = agent.Fake{Delay: fakeDelay()}
 		}
 	default:
 		log.Fatalf("unknown LLM_PROVIDER %q (anthropic|fake)", os.Getenv("LLM_PROVIDER"))
@@ -202,4 +202,18 @@ func loadDotEnv(path string) {
 			fromFile[k] = true
 		}
 	}
+}
+
+// fakeDelay reads FAKE_AGENT_DELAY (a Go duration such as 700ms): a pause
+// before each tool call of the scripted agent, so an offline demo can be
+// watched instead of finishing in a blink. Unset or invalid means no pause.
+func fakeDelay() time.Duration {
+	d, err := time.ParseDuration(os.Getenv("FAKE_AGENT_DELAY"))
+	if err != nil || d < 0 {
+		return 0
+	}
+	if d > 10*time.Second {
+		return 10 * time.Second
+	}
+	return d
 }

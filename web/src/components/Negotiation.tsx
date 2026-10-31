@@ -2,11 +2,19 @@ import { useMemo } from 'react'
 import { AgCharts } from 'ag-charts-react'
 import type { AgCartesianChartOptions } from 'ag-charts-community'
 import { money, type Negotiation } from '../api'
-import { Card, Chip } from './ui'
+import { Chip } from './ui'
 import { usePrefersDark } from './Grid'
 
-/** Transcript and price chart of a buyer agent negotiating with a seller agent. */
-export function NegotiationCard({ negotiation: n, currency, running }: { negotiation: Negotiation; currency: string; running: boolean }) {
+/** The outcome chip shown next to the negotiation heading. */
+export function negotiationChip(n: Negotiation, currency: string, running: boolean) {
+  const saved = n.agreed_price ? n.list_price - n.agreed_price : 0
+  if (n.outcome === 'agreed') return <Chip tone="good">deal at {money(n.agreed_price ?? 0, currency)} · {Math.round((100 * saved) / n.list_price)}% below asking</Chip>
+  if (n.outcome) return <Chip>no deal</Chip>
+  return <Chip>{running ? 'negotiating…' : 'open'}</Chip>
+}
+
+/** Transcript and price chart of a buyer agent negotiating with a seller agent (no card of its own). */
+export function NegotiationBlock({ negotiation: n, currency, running }: { negotiation: Negotiation; currency: string; running: boolean }) {
   const isDark = usePrefersDark()
   const rounds = n.rounds ?? []
   const rows = useMemo(() => {
@@ -43,23 +51,10 @@ export function NegotiationCard({ negotiation: n, currency, running }: { negotia
     }),
     [rows, isDark, currency, n.limit],
   )
-  const saved = n.agreed_price ? n.list_price - n.agreed_price : 0
   return (
-    <Card
-      title="Agent-to-agent negotiation"
-      className="mt-0"
-      action={
-        n.outcome === 'agreed' ? (
-          <Chip tone="good">deal at {money(n.agreed_price ?? 0, currency)} · {Math.round((100 * saved) / n.list_price)}% below asking</Chip>
-        ) : n.outcome ? (
-          <Chip>no deal</Chip>
-        ) : (
-          <Chip>{running ? 'negotiating…' : 'open'}</Chip>
-        )
-      }
-    >
-      <p className="muted" style={{ marginTop: 0 }}>
-        The buyer agent works for you under the mandate (hard limit {money(n.limit, currency)}, never revealed); the seller agent asked {money(n.list_price, currency)}. Neither agent can pay: the agreed price becomes a proposal for you to approve.
+    <div className="negotiation">
+      <p className="muted secondary" style={{ margin: '0 0 6px' }}>
+        Buyer agent limit {money(n.limit, currency)}, never revealed · seller asked {money(n.list_price, currency)} · neither agent can pay; the agreed price becomes a proposal for you.
       </p>
       <div className="transcript">
         {rounds.map((r, i) => (
@@ -74,6 +69,6 @@ export function NegotiationCard({ negotiation: n, currency, running }: { negotia
         {running && <div className="muted">…</div>}
       </div>
       {rows.length > 1 && <div className="chart" style={{ height: 220 }}><AgCharts options={chart} /></div>}
-    </Card>
+    </div>
   )
 }

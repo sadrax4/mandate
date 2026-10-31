@@ -2,13 +2,30 @@ import { AgGridReact, type AgGridReactProps } from 'ag-grid-react'
 import { colorSchemeDark, themeQuartz, type ColDef } from 'ag-grid-community'
 import { useEffect, useState } from 'react'
 
-const base = { borderRadius: 8, wrapperBorderRadius: 12, fontFamily: 'inherit' }
+// A short table keeps a small body so the "no rows" overlay fits, not 150px of air.
+const base = { borderRadius: 8, wrapperBorderRadius: 12, fontFamily: 'inherit', autoHeightMinBodyHeight: 72 }
 const light = themeQuartz.withParams({ ...base, accentColor: '#0d9488' })
 const dark = themeQuartz.withPart(colorSchemeDark).withParams({ ...base, accentColor: '#2dd4bf', backgroundColor: '#15181d' })
 // A cart grid must not reserve 150px of empty body; it also gets no filters,
 // so it can never be filtered down to the empty overlay.
 const lightCompact = light.withParams({ autoHeightMinBodyHeight: 0 })
 const darkCompact = dark.withParams({ autoHeightMinBodyHeight: 0 })
+
+/** True while the media query matches (re-renders on change). */
+export function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches ?? false)
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    const fn = (e: MediaQueryListEvent) => setMatches(e.matches)
+    mq.addEventListener('change', fn)
+    setMatches(mq.matches)
+    return () => mq.removeEventListener('change', fn)
+  }, [query])
+  return matches
+}
+
+/** Cell class for numbers: tabular figures. */
+export const NUM = 'num'
 
 export function usePrefersDark() {
   const [isDark, setDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)

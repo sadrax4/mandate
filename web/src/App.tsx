@@ -18,6 +18,22 @@ function useHashRoute() {
   return { path: path || '/', params: new URLSearchParams(query || '') }
 }
 
+/** One line that says what is real and what is simulated. */
+function ModePill({ config }: { config: Config }) {
+  const simulated: string[] = []
+  if (config.paypal_mode === 'mock') simulated.push('PayPal')
+  if (config.llm_provider === 'fake') simulated.push('agent')
+  if (config.catalog === 'mock') simulated.push('catalog')
+  const mcp = config.paypal_mcp?.enabled ? config.paypal_mcp.tools : []
+  const title = `PayPal: ${config.paypal_mode} · Agent: ${config.llm_provider} · Catalog: ${config.catalog}${mcp.length ? ` · PayPal MCP: ${mcp.length} read-only tools: ${mcp.join(', ')}` : ''}`
+  if (simulated.length) {
+    return <span className="modepill mock" title={title}><i />Simulated: {simulated.join(', ')}</span>
+  }
+  const agent = config.llm_provider.startsWith('anthropic:') ? 'Claude' : config.llm_provider
+  const catalog = config.catalog === 'channel3' ? 'Channel3' : config.catalog
+  return <span className="modepill" title={title}><i />PayPal {config.paypal_mode} · {agent} · {catalog}{mcp.length ? ' · PayPal MCP' : ''}</span>
+}
+
 export default function App() {
   const { path, params } = useHashRoute()
   const [config, setConfig] = useState<Config | null>(null)
@@ -33,41 +49,28 @@ export default function App() {
   else page = <Dashboard />
 
   const active = (p: string) => (path === p || (p !== '/' && path.startsWith(p)) ? 'active' : '')
+  const mandatesActive = path === '/' || path.startsWith('/missions/') || path === '/mandates/new' ? 'active' : ''
   return (
     <ConfigContext.Provider value={config}>
-    <div className="app">
-      <header className="topbar">
-        <a className="brand" href="#/">
-          <span className="logo">M</span>
-          <span>
-            Mandate
-            <small>AI shopping agent, human-approved, PayPal-paid</small>
-          </span>
-        </a>
-        <nav>
-          <a className={active('/')} href="#/">Dashboard</a>
-          <a className={active('/mandates/new')} href="#/mandates/new">New mandate</a>
-          <a className={active('/ledger')} href="#/ledger">Ledger</a>
-          <a className={active('/insights')} href="#/insights">Insights</a>
-        </nav>
-        {config && (
-          <div className="modes" title="Runtime configuration">
-            <span className={`mode ${config.paypal_mode === 'mock' ? 'mode-mock' : 'mode-live'}`}>PayPal: {config.paypal_mode}</span>
-            <span className={`mode ${config.llm_provider === 'fake' ? 'mode-mock' : 'mode-live'}`}>Agent: {config.llm_provider.replace('anthropic:', '')}</span>
-            <span className={`mode ${config.catalog === 'mock' ? 'mode-mock' : 'mode-live'}`}>Catalog: {config.catalog}</span>
-            {config.paypal_mcp?.enabled && (
-              <span className="mode mode-live" title={`Read-only PayPal MCP tools: ${config.paypal_mcp.tools.join(', ')}`}>
-                PayPal MCP: {config.paypal_mcp.tools.length} tools
-              </span>
-            )}
-          </div>
-        )}
-      </header>
-      <main>{page}</main>
-      <footer>
-        Built for the PayPal AI Hackathon. The agent can research and propose; only a human approval and PayPal checkout can move money.
-      </footer>
-    </div>
+      <div className="app">
+        <header className="topbar">
+          <a className="brand" href="#/">
+            <span className="logo">M</span>
+            <span>Mandate</span>
+          </a>
+          <nav aria-label="Main">
+            <a className={mandatesActive} href="#/">Mandates</a>
+            <a className={active('/ledger')} href="#/ledger">Ledger</a>
+            <a className={active('/insights')} href="#/insights">Insights</a>
+          </nav>
+          {config && <ModePill config={config} />}
+        </header>
+        <main>{page}</main>
+        <footer>
+          {config && <div className="footer-mode"><ModePill config={config} /></div>}
+          Built for the PayPal AI Hackathon · the agent proposes, only you and PayPal move money.
+        </footer>
+      </div>
     </ConfigContext.Provider>
   )
 }

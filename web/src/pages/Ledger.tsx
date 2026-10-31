@@ -4,7 +4,8 @@ import { api, isFinalPayment, label, money, statusCellClass, type AskResult, typ
 import { useConfig } from '../config'
 import { Grid } from '../components/Grid'
 import { Markdown } from '../components/Markdown'
-import { Card, Chip, Empty, navigate } from '../components/ui'
+import { Card, Chip, Empty, Statline, SuggestionChip, navigate } from '../components/ui'
+import { NUM } from '../components/Grid'
 
 const ASK_EXAMPLES = [
   'Did my most recent order get captured? Confirm it with PayPal.',
@@ -65,8 +66,8 @@ export default function Ledger() {
       { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
       { field: 'mandate_name', headerName: 'Mandate', minWidth: 130 },
       { field: 'goal', headerName: 'Mission goal', minWidth: 260, flex: 2 },
-      { field: 'items', headerName: 'Items', maxWidth: 90, filter: 'agNumberColumnFilter' },
-      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: 110 },
+      { field: 'items', headerName: 'Items', maxWidth: 90, filter: 'agNumberColumnFilter', cellClass: NUM },
+      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: 110, cellClass: NUM },
       { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 130 },
       { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 110 },
       { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id' },
@@ -82,15 +83,17 @@ export default function Ledger() {
       <div className="page-head">
         <div>
           <h1>Ledger</h1>
-          <p className="lede">Every PayPal order the agent's proposals turned into, across all mandates. Sort, filter and audit.</p>
+          <p className="lede">Every PayPal order the agent's proposals turned into.</p>
         </div>
       </div>
-      <div className="stats">
-        <div className="stat"><b>{totals.count}</b><span>orders</span></div>
-        <div className="stat"><b>{totals.completed}</b><span>completed</span></div>
-        <div className="stat"><b>{money(totals.paid, config?.currency)}</b><span>captured</span></div>
-        <div className="stat"><b>{money(totals.open, config?.currency)}</b><span>{totals.openCount === 1 ? 'open order' : 'open orders'}, not yet captured</span></div>
-      </div>
+      <Statline
+        items={[
+          { value: totals.count, label: 'orders' },
+          { value: totals.completed, label: 'completed' },
+          { value: money(totals.paid, config?.currency), label: 'captured' },
+          { value: money(totals.open, config?.currency), label: totals.openCount === 1 ? 'open order, not yet captured' : 'open orders, not yet captured' },
+        ]}
+      />
       {err && <div className="alert bad">{err}</div>}
       <Card
         title="Orders"
@@ -129,18 +132,14 @@ export default function Ledger() {
 
       {mcp?.enabled && (
         <Card title="Ask about your orders" className="mt" action={<span className="muted">PayPal MCP server · {mcp.tools.length} read-only tools</span>}>
-          <p className="muted" style={{ marginTop: 0 }}>
-            The assistant reads this ledger and PayPal itself through PayPal's hosted MCP server (orders, transactions, shipment tracking, refunds, disputes,
-            invoices). It can look, never pay: only the tools that read data are enabled.
-          </p>
-          <form className="goal-form" onSubmit={ask}>
+          <p className="muted secondary" style={{ marginTop: 0 }}>Reads this ledger and PayPal itself through PayPal's MCP server. It can look, never pay.</p>
+          <form className="ask-form" onSubmit={ask}>
             <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. Did my last order get captured? What did I spend this week?" maxLength={600} aria-label="Question for the order assistant" />
             <button className="btn primary" disabled={asking || !question.trim()}>{asking ? 'Asking PayPal…' : 'Ask'}</button>
           </form>
-          <div className="suggestions">
-            {ASK_EXAMPLES.map((q) => (
-              <button key={q} type="button" className="link" onClick={() => setQuestion(q)}>{q}</button>
-            ))}
+          <div className="hero-try">
+            <span className="try-label">Try:</span>
+            {ASK_EXAMPLES.map((q) => <SuggestionChip key={q} text={q} onClick={() => setQuestion(q)} />)}
           </div>
           {askErr && <div className="alert bad">{askErr}</div>}
           {answer && (

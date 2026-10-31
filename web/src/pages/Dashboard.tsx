@@ -1,15 +1,42 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { api, money, type Mandate, type Mission } from '../api'
 import { useConfig } from '../config'
-import { BudgetBar, Card, Chip, Empty, Pill, navigate } from '../components/ui'
+import { describeRules, relativeTime, remainingOf, shortDate } from '../format'
+import { BudgetBar, Card, Chip, Empty, InlineSelect, Pill, Statline, SuggestionChip, Tracker, navigate, type TrackerStep } from '../components/ui'
 
-const DEMO_GOALS: { goal: string; note?: string; kind?: string }[] = [
+const DEMO_GOALS: { goal: string; note?: string; tag?: string; kind?: string }[] = [
   { goal: 'A mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120' },
   { goal: 'Noise cancelling headphones for open-office work' },
   { goal: 'A large felt desk mat under $40' },
-  { goal: 'A gooseneck kettle and a coffee grinder for pour-over', note: 'kitchen gear, outside the demo mandate\'s categories: watch the agent explain' },
-  { goal: 'A two-hour product photo shoot for 20 items', kind: 'negotiate', note: 'two agents negotiate the price, you approve, PayPal settles' },
+  { goal: 'A gooseneck kettle and a coffee grinder for pour-over', tag: 'outside the mandate', note: "kitchen gear, outside the demo mandate's categories: watch the agent explain" },
+  { goal: 'A two-hour product photo shoot for 20 items', tag: 'agents negotiate', kind: 'negotiate', note: 'two agents negotiate the price, you approve, PayPal settles' },
 ]
+
+const REPEAT_OPTIONS = [
+  { days: 0, label: 'Run once' },
+  { days: 7, label: 'Repeat weekly' },
+  { days: 30, label: 'Repeat monthly' },
+  { days: 90, label: 'Repeat quarterly' },
+]
+
+const VISIBLE_MANDATES = 6
+const VISIBLE_APPROVALS = 5
+const VISIBLE_MISSIONS = 8
+
+const readFlag = (key: string) => {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+const writeFlag = (key: string, on: boolean) => {
+  try {
+    localStorage.setItem(key, on ? '1' : '0')
+  } catch {
+    /* private mode */
+  }
+}
 
 export default function Dashboard() {
   const [mandates, setMandates] = useState<Mandate[]>([])
@@ -17,23 +44,12 @@ export default function Dashboard() {
   const [loadError, setLoadError] = useState('')
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState('')
-  const config = useConfig()
   const [showAll, setShowAll] = useState(false)
-  const [guideHidden, setGuideHidden] = useState(() => {
-    try {
-      return localStorage.getItem('mandate.guide.hidden') === '1'
-    } catch {
-      return false
-    }
-  })
-  const hideGuide = () => {
-    setGuideHidden(true)
-    try {
-      localStorage.setItem('mandate.guide.hidden', '1')
-    } catch {
-      /* private mode */
-    }
-  }
+  const [approvalsAll, setApprovalsAll] = useState(false)
+  const [missionsAll, setMissionsAll] = useState(false)
+  const [selectedId, setSelectedId] = useState('')
+  const [guideOpen, setGuideOpen] = useState(() => readFlag('mandate.guide.open'))
+  const config = useConfig()
 
   // loadError comes and goes with the 4-second poll; actionError stays until the next action.
   const load = () =>
@@ -50,39 +66,41 @@ export default function Dashboard() {
     const t = setInterval(load, 4000)
     return () => clearInterval(t)
   }, [])
-  const VISIBLE = 6
-  const sorted = [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-  const visible = showAll ? sorted : sorted.slice(0, VISIBLE)
 
-  // Reveal a mandate card: expand the list only if the card is hidden, then
-  // scroll to it and flash it once it is in the DOM.
+  const sorted = useMemo(() => [...mandates].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)), [mandates])
+  const demo = mandates.find((m) => m.demo)
+
+  // The goal bar works under one mandate: the demo mandate, else the newest.
+  useEffect(() => {
+    if (sorted.length === 0) return
+    if (selectedId && sorted.some((m) => m.id === selectedId)) return
+    setSelectedId((demo ?? sorted[0]).id)
+  }, [sorted, demo, selectedId])
+
+  // Reveal a mandate card: expand the list only if the card is hidden, then scroll to it and flash it once it is in the DOM.
   const [revealId, setRevealId] = useState('')
   const reveal = (id: string) => {
-    if (sorted.findIndex((m) => m.id === id) >= VISIBLE) setShowAll(true)
+    if (sorted.findIndex((m) => m.id === id) >= VISIBLE_MANDATES) setShowAll(true)
     setRevealId(id)
   }
   useEffect(() => {
     if (!revealId) return
     const el = document.getElementById('mandate-' + revealId)
-    if (!el) return // not rendered yet: the effect runs again when the list changes
+    if (!el) return
     el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     el.classList.add('flash')
     const t = setTimeout(() => el.classList.remove('flash'), 1800)
     setRevealId('')
     return () => clearTimeout(t)
   }, [revealId, showAll, mandates])
-  const demo = mandates.find((m) => m.demo)
-  // The server creates the demo mandate once and returns it on later clicks.
+
   const createDemo = async () => {
-    if (demo) {
-      reveal(demo.id)
-      return
-    }
     setBusy('demo')
     setActionError('')
     try {
       const r = await api.demoMandate()
       await load()
+      setSelectedId(r.mandate.id)
       if (!r.created) reveal(r.mandate.id)
     } catch (e: any) {
       setActionError(e.message)
@@ -91,218 +109,349 @@ export default function Dashboard() {
     }
   }
 
+  const select = (id: string) => {
+    setSelectedId(id)
+    const input = document.getElementById('goal-input') as HTMLInputElement | null
+    if (input) {
+      const r = input.getBoundingClientRect()
+      if (r.top < 0 || r.bottom > window.innerHeight) input.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      input.focus({ preventScroll: true })
+    }
+  }
+
+  const toggleGuide = () => {
+    setGuideOpen((v) => {
+      writeFlag('mandate.guide.open', !v)
+      return !v
+    })
+  }
+
+  const steps: TrackerStep[] = useMemo(() => {
+    const done = [mandates.length > 0, missions.length > 0, missions.some((m) => m.status === 'paid')]
+    const labels = ['① Mandate', '② Mission', '③ Approve & pay']
+    let current = done.findIndex((d) => !d)
+    return labels.map((label, i) => ({ key: label, label: done[i] ? `${label} ✓` : label, state: done[i] ? 'done' : i === current ? 'current' : 'future' }))
+  }, [mandates.length, missions])
+
+  const awaiting = missions.filter((ms) => ms.status === 'awaiting_approval')
+  const standing = missions.filter((ms) => (ms.repeat_days ?? 0) > 0)
+  const visibleMandates = showAll ? sorted : sorted.slice(0, VISIBLE_MANDATES)
+  const cur = config?.currency || mandates[0]?.currency || 'USD'
+  const sum = (f: (m: Mandate) => number) => mandates.reduce((s, m) => s + f(m), 0)
+
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Mandates</h1>
-          <p className="lede">A mandate is the authority you give the agent: a budget, caps and rules. Start a mission under a mandate and the agent researches, compares and proposes. You approve. PayPal pays.</p>
-        </div>
-        <div className="actions">
-          <button className="btn ghost" onClick={createDemo} disabled={busy === 'demo'}>
-            {busy === 'demo' ? 'Creating…' : demo ? 'Show demo mandate' : 'Create demo mandate'}
-          </button>
-          <a className="btn primary" href="#/mandates/new">New mandate</a>
-        </div>
-      </div>
+      {mandates.length === 0 ? (
+        <section className="hero empty-hero">
+          <h1 className="t-display">Give an AI agent a budget. Keep the final say.</h1>
+          <p className="hero-sub">A mandate is the authority you grant: a budget, a per-item cap, allowed categories, blocked merchants. The agent works inside it; you approve; PayPal pays.</p>
+          <div className="actions">
+            <button className="btn primary lg" onClick={createDemo} disabled={busy === 'demo'}>{busy === 'demo' ? 'Creating…' : 'Create demo mandate'}</button>
+            <a className="btn ghost lg" href="#/mandates/new">New mandate</a>
+          </div>
+          <div className="hero-steps">
+            <Tracker steps={steps} size="sm" />
+            <span>·</span>
+            <button type="button" className="link" aria-expanded={guideOpen} onClick={toggleGuide}>{guideOpen ? 'Hide how it works' : 'How it works'}</button>
+          </div>
+          {guideOpen && <HowItWorks />}
+        </section>
+      ) : (
+        <GoalBar
+          mandates={sorted}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          demoExists={!!demo}
+          busy={busy}
+          onDemo={createDemo}
+          onStarted={load}
+          steps={steps}
+          guideOpen={guideOpen}
+          onToggleGuide={toggleGuide}
+        />
+      )}
       {actionError && <div className="alert bad">{actionError}</div>}
       {loadError && <div className="alert bad">Could not load the dashboard: {loadError}</div>}
 
-      {!guideHidden && (
-        <div className="guide">
-          <div>
-            <b>Start here (two minutes).</b>
-            <ol>
-              <li><b>Create demo mandate</b>, or set your own limits with <b>New mandate</b>.</li>
-              <li>Pick a suggested goal and <b>Start mission</b>. Watch the agent search{config?.catalog === 'channel3' ? ' real products through Channel3' : ' the demo catalog'}, check the mandate and propose.</li>
-              <li><b>Approve & pay with PayPal</b>{config?.paypal_mode === 'mock' ? ' (a built-in simulator stands in for PayPal here)' : config?.demo_buyer_hint ? <> and log in with the sandbox buyer <code>{config.demo_buyer_hint}</code></> : ''}. Back here you get the capture ID, the Ledger row and the Insights charts.</li>
-              <li>Then try: approve a second cart with one click (the mandate saved your PayPal account), reject a proposal with feedback, start a goal the mandate cannot fit and accept the agent's suggested fix, or make a mission a monthly standing order.</li>
-            </ol>
-            <span className="muted">Nothing here moves real money: PayPal runs in {config?.paypal_mode === 'mock' ? 'simulated' : 'sandbox'} mode.</span>
+      {awaiting.length > 0 && (
+        <Card tone="attention" title="Needs your approval" action={<span className="pill pill-warn num">{awaiting.length}</span>} className="band">
+          <div className="rows" role="list">
+            {(approvalsAll ? awaiting : awaiting.slice(0, VISIBLE_APPROVALS)).map((ms) => (
+              <div key={ms.id} className="row approval link" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
+                <span className="goal" title={ms.goal}>{ms.goal}</span>
+                <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
+                <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
+                <a className="btn primary sm" href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>Review &amp; approve</a>
+              </div>
+            ))}
           </div>
-          <button className="btn ghost sm" onClick={hideGuide} aria-label="Hide this guide">Hide</button>
-        </div>
-      )}
-
-      {missions.some((ms) => ms.status === 'awaiting_approval') && (
-        <Card title="Needs your approval" className="mt-0" action={<span className="muted">the agent proposed; nothing moves until you decide</span>}>
-          <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Goal</th>
-                <th>Mandate</th>
-                <th>Proposed</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {missions.filter((ms) => ms.status === 'awaiting_approval').map((ms) => (
-                <tr key={ms.id}>
-                  <td>{ms.goal}</td>
-                  <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
-                  <td className="muted">{new Date(ms.updated_at).toLocaleString()}</td>
-                  <td><a className="btn primary sm" href={`#/missions/${ms.id}`}>Review &amp; approve</a></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
+          {!approvalsAll && awaiting.length > VISIBLE_APPROVALS && (
+            <div className="rows-more"><button type="button" className="link" onClick={() => setApprovalsAll(true)}>and {awaiting.length - VISIBLE_APPROVALS} more…</button></div>
+          )}
         </Card>
       )}
 
-      {mandates.length === 0 ? (
-        <Empty>No mandates yet. Create one, or use the demo mandate to see the whole flow in a minute.</Empty>
-      ) : (
-        <>
+      {mandates.length > 0 && (
+        <section className="band">
+          <div className="section-head">
+            <h2 className="section">Your mandates<span className="count num">{mandates.length}</span></h2>
+            <Statline
+              compact
+              items={[
+                { value: money(sum((m) => m.total_budget), cur), label: 'Authority' },
+                { value: money(sum((m) => m.spent), cur), label: 'Spent' },
+                { value: money(sum((m) => m.reserved), cur), label: 'Reserved' },
+                { value: money(sum(remainingOf), cur), label: 'Available' },
+              ]}
+            />
+          </div>
           <div className="mandate-grid">
-            {visible.map((m) => (
-              <MandateCard key={m.id} mandate={m} missions={missions.filter((x) => x.mandate_id === m.id)} onStarted={load} />
+            {visibleMandates.map((m) => (
+              <MandateCard key={m.id} mandate={m} missions={missions.filter((x) => x.mandate_id === m.id)} selected={m.id === selectedId} onSelect={() => select(m.id)} onChanged={load} />
             ))}
           </div>
-          {sorted.length > VISIBLE && (
+          {sorted.length > VISIBLE_MANDATES && (
             <div className="actions" style={{ justifyContent: 'center', marginTop: 10 }}>
               <button className="btn ghost" onClick={() => setShowAll((v) => !v)}>
-                {showAll ? `Show the ${VISIBLE} newest mandates` : `Show all ${sorted.length} mandates`}
+                {showAll ? `Show the ${VISIBLE_MANDATES} newest mandates` : `Show all ${sorted.length} mandates`}
               </button>
             </div>
           )}
-        </>
+        </section>
       )}
 
-      {missions.some((ms) => (ms.repeat_days ?? 0) > 0) && (
-        <Card title="Standing orders" className="mt" action={<span className="muted">goals the agent re-runs on a schedule, always inside the mandate</span>}>
-          <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Goal</th>
-                <th>Mandate</th>
-                <th>Every</th>
-                <th>Next run</th>
-                <th>Last run</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {missions.filter((ms) => (ms.repeat_days ?? 0) > 0).map((ms) => {
-                const last = ms.last_run_id ? missions.find((x) => x.id === ms.last_run_id) : ms
-                return (
-                  <tr key={ms.id}>
-                    <td><a href={`#/missions/${ms.id}`}>{ms.goal}</a></td>
-                    <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
-                    <td>{ms.repeat_days} days</td>
-                    <td className="muted">{ms.next_run_at ? new Date(ms.next_run_at).toLocaleDateString() : '—'}</td>
-                    <td>{last ? <a href={`#/missions/${last.id}`}><Pill status={last.status} /></a> : '—'}</td>
-                    <td><StandingOrderButtons mission={ms} onChanged={load} /></td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      {standing.length > 0 && (
+        <Card title="Standing orders" className="band" action={<span className="muted subtitle">re-run on a schedule, always inside the mandate</span>}>
+          <div className="rows" role="list">
+            {standing.map((ms) => {
+              const last = ms.last_run_id ? missions.find((x) => x.id === ms.last_run_id) : ms
+              return (
+                <div key={ms.id} className="row standing" role="listitem">
+                  <span className="muted so-icon">⟳</span>
+                  <span className="goal"><a href={`#/missions/${ms.id}`}>{ms.goal}</a></span>
+                  <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
+                  <span className="muted num">every {ms.repeat_days} days · next {shortDate(ms.next_run_at)}</span>
+                  <span>{last ? <a href={`#/missions/${last.id}`}><Pill status={last.status} /></a> : '—'}</span>
+                  <StandingOrderButtons mission={ms} onChanged={load} />
+                </div>
+              )
+            })}
           </div>
         </Card>
       )}
 
-      <Card title="Recent missions" className="mt">
-        {missions.length === 0 ? (
-          <Empty>No missions yet.</Empty>
-        ) : (
-          <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Goal</th>
-                <th>Mandate</th>
-                <th>Status</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {missions.slice(0, 20).map((ms) => (
-                <tr key={ms.id} className="row-link" onClick={() => navigate(`#/missions/${ms.id}`)}>
-                  <td><a href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>{ms.goal}</a></td>
-                  <td>{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</td>
-                  <td><Pill status={ms.status} /></td>
-                  <td className="muted">{new Date(ms.updated_at).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        )}
-      </Card>
+      {(mandates.length > 0 || missions.length > 0) && (
+        <Card title="Recent missions" className="band">
+          {missions.length === 0 ? (
+            <Empty>No missions yet. Start one above.</Empty>
+          ) : (
+            <>
+              <div className="rows" role="list">
+                {(missionsAll ? missions : missions.slice(0, VISIBLE_MISSIONS)).map((ms) => (
+                  <div key={ms.id} className="row recent link" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
+                    <span><Pill status={ms.status} /></span>
+                    <span className="goal" title={ms.goal}><a href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>{ms.goal}</a></span>
+                    <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
+                    <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
+                  </div>
+                ))}
+              </div>
+              {missions.length > VISIBLE_MISSIONS && (
+                <div className="rows-more"><button type="button" className="link" onClick={() => setMissionsAll((v) => !v)}>{missionsAll ? `Show the ${VISIBLE_MISSIONS} newest` : `Show all ${missions.length}`}</button></div>
+              )}
+            </>
+          )}
+        </Card>
+      )}
     </div>
   )
 }
 
-const REPEAT_OPTIONS = [
-  { days: 0, label: 'Run once' },
-  { days: 7, label: 'Repeat weekly' },
-  { days: 30, label: 'Repeat monthly' },
-  { days: 90, label: 'Repeat quarterly' },
-]
-
-function MandateCard({ mandate: m, missions, onStarted }: { mandate: Mandate; missions: Mission[]; onStarted: () => void }) {
+function GoalBar({ mandates, selectedId, onSelect, demoExists, busy, onDemo, onStarted, steps, guideOpen, onToggleGuide }: {
+  mandates: Mandate[]
+  selectedId: string
+  onSelect: (id: string) => void
+  demoExists: boolean
+  busy: string
+  onDemo: () => void
+  onStarted: () => void
+  steps: TrackerStep[]
+  guideOpen: boolean
+  onToggleGuide: () => void
+}) {
   const [goal, setGoal] = useState('')
-  const [repeat, setRepeat] = useState(0)
   const [kind, setKind] = useState('buy')
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  const [repeat, setRepeat] = useState(0)
+  const [starting, setStarting] = useState(false)
+  const [startErr, setStartErr] = useState('')
   const start = async (e: FormEvent) => {
     e.preventDefault()
-    if (!goal.trim()) return
-    setBusy(true)
-    setErr('')
+    if (!goal.trim() || !selectedId) return
+    setStarting(true)
+    setStartErr('')
     try {
-      const ms = await api.createMission(m.id, goal.trim(), repeat, kind)
+      const ms = await api.createMission(selectedId, goal.trim(), repeat, kind)
       onStarted()
       navigate(`#/missions/${ms.id}`)
     } catch (e: any) {
-      setErr(e.message)
+      setStartErr(e.message)
     } finally {
-      setBusy(false)
+      setStarting(false)
     }
   }
-  const active = missions.filter((x) => x.status === 'running' || x.status === 'awaiting_approval' || x.status === 'awaiting_payment').length
+  const pick = (g: (typeof DEMO_GOALS)[number]) => {
+    setGoal(g.goal)
+    setKind(g.kind ?? 'buy')
+    document.getElementById('goal-input')?.focus()
+  }
   return (
-    <Card id={'mandate-' + m.id} className="mandate-card" title={m.name} action={<span className="muted">{missions.length} mission{missions.length === 1 ? '' : 's'}{active ? ` · ${active} active` : ''}</span>}>
-      <BudgetBar total={m.total_budget} spent={m.spent} reserved={m.reserved} currency={m.currency} />
-      <div className="chips">
-        {m.max_per_item > 0 && <Chip>≤ {money(m.max_per_item, m.currency)} per item</Chip>}
-        {m.auto_approve_under > 0 ? <Chip>auto-approve under {money(m.auto_approve_under, m.currency)}</Chip> : <Chip>every cart needs approval</Chip>}
-        {m.allowed_categories && m.allowed_categories.length > 0 && <Chip>only {m.allowed_categories.join(', ')}</Chip>}
-        {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
-        {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
-        {m.has_saved_payment ? (
-          <>
-            <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
-            <ForgetButton mandate={m} onChanged={onStarted} />
-          </>
-        ) : m.save_payment_method ? (
-          <Chip>saves PayPal at the first checkout</Chip>
-        ) : null}
+    <section className="hero">
+      <div className="hero-head">
+        <div className="hero-title">
+          <h1 className="t-display">What should the agent buy?</h1>
+          <p className="hero-sub">Give it a goal under a mandate. It researches, compares and proposes. You approve. PayPal pays.</p>
+        </div>
+        <div className="actions">
+          <button className="btn ghost" onClick={onDemo} disabled={busy === 'demo'}>{busy === 'demo' ? 'Creating…' : demoExists ? 'Show demo mandate' : 'Create demo mandate'}</button>
+          <a className="btn primary" href="#/mandates/new">New mandate</a>
+        </div>
       </div>
-      <form className="goal-form" onSubmit={start}>
-        <input value={goal} onChange={(e) => setGoal(e.target.value)} placeholder={kind === 'negotiate' ? 'What service should the agents negotiate? e.g. logo design, three concepts' : 'What should the agent buy? e.g. a 27-inch 4K USB-C monitor'} aria-label={`Goal for the agent under ${m.name}`} />
-        <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Mission kind" title="Buy: research a catalog and propose a cart. Negotiate: a buyer agent haggles with a seller agent for a service; the agreed price becomes the proposal.">
-          <option value="buy">Buy a product</option>
-          <option value="negotiate">Hire a service (agents negotiate)</option>
-        </select>
-        <select value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} aria-label="Repeat schedule" title="Standing order: run this goal again on a schedule, inside the same mandate">
-          {REPEAT_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
-        </select>
-        <button className="btn primary" disabled={busy || !goal.trim()}>{busy ? 'Starting…' : 'Start mission'}</button>
+      <form className="goal-bar" onSubmit={start}>
+        <input
+          id="goal-input"
+          className="goal-input"
+          value={goal}
+          onChange={(e) => setGoal(e.target.value)}
+          placeholder={kind === 'negotiate' ? 'e.g. logo design, three concepts' : 'e.g. a 27-inch 4K USB-C monitor under $300'}
+          aria-label="Goal for the agent"
+        />
+        <button className="btn primary goal-go" disabled={starting || !goal.trim()}>{starting ? 'Starting…' : 'Start mission'}</button>
       </form>
-      <div className="suggestions">
-        {DEMO_GOALS.map((g) => (
-          <button key={g.goal} type="button" className="link" title={g.note} onClick={() => { setGoal(g.goal); setKind(g.kind ?? 'buy') }}>
-            {g.goal}
-            {g.note && <span className="muted"> ({g.note})</span>}
-          </button>
-        ))}
+      {startErr && <div className="alert bad">{startErr}</div>}
+      <div className="goal-settings">
+        <span className="setting">
+          <span>Under</span>
+          <InlineSelect value={selectedId} onChange={(e) => onSelect(e.target.value)} aria-label="Mandate for the next mission" title="The mandate the agent works under">
+            {mandates.map((m) => (
+              <option key={m.id} value={m.id}>{m.name} · {money(remainingOf(m), m.currency)} left</option>
+            ))}
+          </InlineSelect>
+        </span>
+        <span className="sep">·</span>
+        <span className="setting">
+          <InlineSelect value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Mission kind" title="Buy: research a catalog and propose a cart. Negotiate: a buyer agent haggles with a seller agent for a service; the agreed price becomes the proposal.">
+            <option value="buy">Buy a product</option>
+            <option value="negotiate">Hire a service (agents negotiate)</option>
+          </InlineSelect>
+        </span>
+        <span className="sep">·</span>
+        <span className="setting">
+          <InlineSelect value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} aria-label="Repeat schedule" title="Standing order: run this goal again on a schedule, inside the same mandate">
+            {REPEAT_OPTIONS.map((o) => <option key={o.days} value={o.days}>{o.label}</option>)}
+          </InlineSelect>
+        </span>
       </div>
-      {err && <div className="alert bad">{err}</div>}
+      <div className="hero-try">
+        <span className="try-label">Try:</span>
+        {DEMO_GOALS.map((g) => <SuggestionChip key={g.goal} text={g.goal} tag={g.tag} title={g.note} onClick={() => pick(g)} />)}
+      </div>
+      <div className="hero-steps">
+        <Tracker steps={steps} size="sm" />
+        <span>·</span>
+        <button type="button" className="link" aria-expanded={guideOpen} onClick={onToggleGuide}>{guideOpen ? 'Hide how it works' : 'How it works'}</button>
+      </div>
+      {guideOpen && <HowItWorks />}
+    </section>
+  )
+}
+
+function HowItWorks() {
+  const config = useConfig()
+  const mock = config?.paypal_mode === 'mock'
+  return (
+    <div className="card howitworks">
+      <div className="cols">
+        <div className="col"><span className="n">1</span><span>Create the demo mandate, or set your own limits with New mandate.</span></div>
+        <div className="col"><span className="n">2</span><span>Pick a suggested goal and Start mission. The agent searches {config?.catalog === 'channel3' ? 'real products through Channel3' : 'the demo catalog'}, checks the mandate and proposes.</span></div>
+        <div className="col"><span className="n">3</span><span>Approve &amp; pay with PayPal{mock ? ' (a built-in simulator stands in here)' : config?.demo_buyer_hint ? <> and log in with the sandbox buyer <code>{config.demo_buyer_hint}</code></> : ''}. The capture ID lands in the Ledger and the Insights charts.</span></div>
+      </div>
+      <p className="then">Then try: approve a second cart with one click, reject with feedback, start a goal the mandate cannot fit and accept the agent's fix, or make a mission a monthly standing order. Nothing here moves real money: PayPal runs in {mock ? 'simulated' : 'sandbox'} mode.</p>
+    </div>
+  )
+}
+
+function MandateCard({ mandate: m, missions, selected, onSelect, onChanged }: { mandate: Mandate; missions: Mission[]; selected: boolean; onSelect: () => void; onChanged: () => void }) {
+  const [open, setOpen] = useState(false)
+  const active = missions.filter((x) => x.status === 'running' || x.status === 'awaiting_approval' || x.status === 'awaiting_payment').length
+  const remaining = remainingOf(m)
+  const mini = [...missions].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 5)
+  return (
+    <Card
+      id={'mandate-' + m.id}
+      className={`mandate-card${selected ? ' selected' : ''}`}
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest('a, button, details, summary, input')) return
+        onSelect()
+      }}
+    >
+      <div className="name-row">
+        <span className="name" title={m.name}>{m.name}</span>
+        {active > 0 && <Pill status="running">{active} active</Pill>}
+      </div>
+      <div className="money-row">
+        <span className="num num-lg">{money(remaining, m.currency)}</span>
+        <span className="of num">left of {money(m.total_budget, m.currency)}{m.reserved > 0 && <span className="reserved"> · {money(m.reserved, m.currency)} reserved</span>}</span>
+      </div>
+      <BudgetBar compact total={m.total_budget} spent={m.spent} reserved={m.reserved} currency={m.currency} />
+      <div className="rules" title={describeRules(m)}>{describeRules(m)}</div>
+      {(m.has_saved_payment || (m.auto_approve_under > 0 && !m.require_approval)) && (
+        <div className="chips">
+          {m.auto_approve_under > 0 && !m.require_approval && <Chip>auto-pay under {money(m.auto_approve_under, m.currency)}</Chip>}
+          {m.has_saved_payment && <Chip tone="good">PayPal saved</Chip>}
+        </div>
+      )}
+      <div className="card-foot">
+        <button type="button" className="link use" aria-pressed={selected} onClick={onSelect}>{selected ? 'Selected for the next mission ✓' : 'Use for next mission'}</button>
+        <button type="button" className="link" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? 'Details ▴' : 'Details ▾'}</button>
+      </div>
+      {open && (
+        <div className="card-details">
+          <div className="chips" style={{ margin: 0 }}>
+            {m.max_per_item > 0 && <Chip>≤ {money(m.max_per_item, m.currency)} per item</Chip>}
+            {m.auto_approve_under > 0 ? <Chip>auto-approve under {money(m.auto_approve_under, m.currency)}</Chip> : <Chip>every cart needs approval</Chip>}
+            {m.allowed_categories && m.allowed_categories.length > 0 && <Chip>only {m.allowed_categories.join(', ')}</Chip>}
+            {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
+            {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
+            {m.has_saved_payment ? (
+              <>
+                <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
+                <ForgetButton mandate={m} onChanged={onChanged} />
+              </>
+            ) : m.save_payment_method ? (
+              <Chip>saves PayPal at the first checkout</Chip>
+            ) : null}
+          </div>
+          <div className="budget-legend">
+            <span><i className="sw sw-spent" /> spent {money(m.spent, m.currency)}</span>
+            <span><i className="sw sw-reserved" /> reserved {money(m.reserved, m.currency)}</span>
+            <span className="budget-remaining num">{money(remaining, m.currency)} left of {money(m.total_budget, m.currency)}</span>
+          </div>
+          <div className="label">{missions.length} mission{missions.length === 1 ? '' : 's'}</div>
+          {mini.length === 0 ? (
+            <div className="muted secondary">No missions under this mandate yet.</div>
+          ) : (
+            <div className="rows" role="list">
+              {mini.map((ms) => (
+                <div key={ms.id} className="row mini" role="listitem">
+                  <span className="goal" title={ms.goal}><a href={`#/missions/${ms.id}`}>{ms.goal}</a></span>
+                  <Pill status={ms.status} />
+                  <span className="when num">{relativeTime(ms.updated_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
@@ -331,7 +480,7 @@ export function StandingOrderButtons({ mission, onChanged }: { mission: Mission;
     <span className="actions" style={{ gap: 6 }}>
       <button className="btn ghost sm" onClick={() => act('run')} disabled={busy !== ''}>{busy === 'run' ? 'Starting…' : 'Run now'}</button>
       <button className="btn ghost sm" onClick={() => act('stop')} disabled={busy !== ''}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
-      {err && <span className="alert bad" style={{ padding: '2px 8px' }}>{err}</span>}
+      {err && <span className="alert bad" style={{ padding: '2px 8px', margin: 0 }}>{err}</span>}
     </span>
   )
 }
@@ -357,7 +506,7 @@ function ForgetButton({ mandate: m, onChanged }: { mandate: Mandate; onChanged: 
       <button type="button" className="link" onClick={forget} disabled={busy} title="Revoke: the agent loses the ability to pay without you">
         {busy ? 'Forgetting…' : 'forget saved PayPal'}
       </button>
-      {err && <span className="alert bad" style={{ padding: '2px 8px' }}>{err}</span>}
+      {err && <span className="alert bad" style={{ padding: '2px 8px', margin: 0 }}>{err}</span>}
     </>
   )
 }

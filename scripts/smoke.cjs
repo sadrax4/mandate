@@ -19,9 +19,10 @@ for (const h of ['#/insights', '#/ledger', '#/mandates/new']) {
 if (pageErrors) throw new Error('page errors on a fresh install')
 
 await page.goto(base + '/#/')
-await page.waitForSelector('text=Mandates')
+await page.waitForSelector('text=Create demo mandate')
 await page.click('text=Create demo mandate')
-await page.waitForSelector('text=Desk refresh')
+await page.waitForSelector('.mandate-card .name:has-text("Desk refresh")')
+await page.waitForSelector('text=Selected for the next mission')
 await page.screenshot({ path: `${S}/01-dashboard.png`, fullPage: true })
 
 await page.click('text=A mechanical keyboard with brown switches')
@@ -109,8 +110,18 @@ await page.screenshot({ path: `${S}/07-new-mandate.png`, fullPage: true })
 // dark mode dashboard
 const dark = await browser.newPage({ viewport: { width: 1360, height: 900 }, colorScheme: 'dark' })
 await dark.goto(base + '/#/')
-await dark.waitForSelector('text=Desk refresh')
+await dark.waitForSelector('.mandate-card .name:has-text("Desk refresh")')
 await dark.screenshot({ path: `${S}/08-dashboard-dark.png`, fullPage: true })
+
+// phone width: no sideways scroll on the dashboard or a mission page
+const phone = await browser.newPage({ viewport: { width: 375, height: 812 } })
+for (const h of ['#/', '#/missions/' + ms.id]) {
+  await phone.goto(base + '/' + h)
+  await phone.waitForTimeout(800)
+  const sw = await phone.evaluate(() => document.documentElement.scrollWidth)
+  if (sw > 375) throw new Error(`horizontal overflow at 375px on ${h}: ${sw}`)
+}
+await phone.screenshot({ path: `${S}/12-dashboard-phone.png`, fullPage: true })
 await browser.close()
 if (pageErrors) throw new Error(`${pageErrors} page error(s) during the walk-through`)
 console.log('SMOKE_OK')

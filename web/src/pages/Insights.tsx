@@ -3,8 +3,8 @@ import type { ColDef, ColGroupDef, GridApi } from 'ag-grid-community'
 import { AgCharts } from 'ag-charts-react'
 import type { AgCartesianChartOptions, AgPolarChartOptions } from 'ag-charts-community'
 import { api, label, money, statusCellClass, type InsightItem, type Insights } from '../api'
-import { Grid, usePrefersDark } from '../components/Grid'
-import { Card, Empty, navigate } from '../components/ui'
+import { Grid, NUM, usePrefersDark } from '../components/Grid'
+import { Card, Empty, Statline, navigate } from '../components/ui'
 
 const CategoryCell = (p: { value?: string }) => (p.value ? <span className="cell-cat">{p.value}</span> : null)
 
@@ -92,9 +92,9 @@ export default function InsightsPage() {
       {
         headerName: 'Money',
         children: [
-          { field: 'unit_price', headerName: 'Unit', type: 'rightAligned', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', maxWidth: 110 },
-          { field: 'quantity', headerName: 'Qty', type: 'rightAligned', maxWidth: 80, filter: 'agNumberColumnFilter' },
-          { field: 'line_total', headerName: 'Line total', type: 'rightAligned', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', minWidth: 125 },
+          { field: 'unit_price', headerName: 'Unit', type: 'rightAligned', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', maxWidth: 110, cellClass: NUM },
+          { field: 'quantity', headerName: 'Qty', type: 'rightAligned', maxWidth: 80, filter: 'agNumberColumnFilter', cellClass: NUM },
+          { field: 'line_total', headerName: 'Line total', type: 'rightAligned', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', minWidth: 125, cellClass: NUM },
         ],
       },
       {
@@ -122,25 +122,27 @@ export default function InsightsPage() {
       <div className="page-head">
         <div>
           <h1>Spending insights</h1>
-          <p className="lede">What the agent bought under every mandate, by category, merchant and day. Only captured PayPal payments count as spend.</p>
+          <p className="lede">What the agent bought, by mandate, category, merchant and day. Only captured PayPal payments count.</p>
         </div>
       </div>
-      <div className="stats">
-        <div className="stat"><b>{money(t.captured, cur)}</b><span>captured through PayPal</span></div>
-        <div className="stat"><b>{t.orders}</b><span>completed orders</span></div>
-        <div className="stat"><b>{t.items}</b><span>items bought</span></div>
-        <div className="stat"><b>{money(t.average_order, cur)}</b><span>average order</span></div>
-        <div className="stat"><b>{t.mandates}</b><span>mandates</span></div>
-      </div>
+      <Statline
+        items={[
+          { value: money(t.captured, cur), label: 'captured through PayPal' },
+          { value: t.orders, label: 'completed orders' },
+          { value: t.items, label: 'items bought' },
+          { value: money(t.average_order, cur), label: 'average order' },
+          { value: t.mandates, label: 'mandates' },
+        ]}
+      />
 
       {t.orders === 0 ? (
         <Empty>No captured payments yet. Approve a proposal and complete PayPal checkout; the charts fill in from the ledger.</Empty>
       ) : (
         <div className="charts">
-          <div className="chart-card"><h3>Budget use per mandate</h3><div className="sub">spent, reserved and still available</div><div className="chart"><AgCharts options={budgets} /></div></div>
-          <div className="chart-card"><h3>Spend by category</h3><div className="sub">captured line items</div><div className="chart"><AgCharts options={byCategory} /></div></div>
-          <div className="chart-card"><h3>Spend by merchant</h3><div className="sub">where the money went</div><div className="chart"><AgCharts options={byMerchant} /></div></div>
-          <div className="chart-card"><h3>Spend per day</h3><div className="sub">captured orders by date (UTC)</div><div className="chart"><AgCharts options={byDay} /></div></div>
+          <div className="card chart-card"><h3>Budget use per mandate</h3><div className="sub">spent, reserved and still available</div><div className="chart"><AgCharts options={budgets} /></div></div>
+          <div className="card chart-card"><h3>Spend by category</h3><div className="sub">captured line items</div><div className="chart"><AgCharts options={byCategory} /></div></div>
+          <div className="card chart-card"><h3>Spend by merchant</h3><div className="sub">where the money went</div><div className="chart"><AgCharts options={byMerchant} /></div></div>
+          <div className="card chart-card"><h3>Spend per day</h3><div className="sub">captured orders by date (UTC)</div><div className="chart"><AgCharts options={byDay} /></div></div>
         </div>
       )}
 

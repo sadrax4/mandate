@@ -2,6 +2,11 @@
 
 Everything here was built during the PayPal AI Hackathon submission period (Oct 1 – Nov 12, 2026). Newest first.
 
+## 2026-10-31
+
+- ui: redesigned around one action and one story. The dashboard opens on a goal bar (mandate, kind and repeat chosen inline, suggested goals as chips, a three-step guide that folds away), followed by what needs approval, the mandates as cards with the remaining amount first, standing orders and recent missions as rows. The mission page is one column: the goal, a storyline tracker (search, compare, check, propose, pay; revised, no proposal, failed), a decision card for every state (working, proposal, approved but unpaid, paid with the PayPal receipt, negotiation, suggestion, failed), the story of how the agent got here with tool calls folded into one line each and a switch to show every event, and the products it compared. No nested scrolling, flat cards, tabular numbers, phone layout without sideways scroll, dark mode throughout
+- demo: `FAKE_AGENT_DELAY` slows the scripted agent so an offline mission can be watched while it runs
+
 ## 2026-10-30
 
 - ledger: the capture's own status decides whether money moved: pending captures (eCheck, review) stay reserved until PayPal completes them, declined ones hand the proposal back for a fresh approval; refunds that arrive before their capture are parked and applied at booking; a withdrawn order that PayPal captures anyway is booked and flagged, or reconciled by the status check

@@ -25,23 +25,23 @@ await page.waitForTimeout(500)
 await page.screenshot({ path: `${S}/09-vault-saved.png`, fullPage: true })
 
 await page.goto(base + '/#/')
-await page.waitForSelector('text=PayPal saved · one-click approvals, auto-pay under $60.00', { timeout: 10000 })
+await page.waitForSelector('text=PayPal saved', { timeout: 10000 })
 
 // 2. a cart above the threshold: human approves, paid with the saved account, no redirect
 const m2 = await (await page.request.post(base + '/api/missions', { data: { mandate_id: md.id, goal: 'noise cancelling headphones' } })).json()
 await page.goto(base + '/#/missions/' + m2.id)
 await page.waitForSelector('button:has-text("Approve & pay with saved PayPal")', { timeout: 20000 })
 await page.click('button:has-text("Approve & pay with saved PayPal")')
-await page.waitForSelector('text=none: paid with the PayPal account saved on this mandate', { timeout: 10000 })
+await page.waitForSelector('text=saved PayPal account, no checkout', { timeout: 10000 })
 if (!page.url().includes('/#/missions/' + m2.id)) throw new Error('should not have left the mission page: ' + page.url())
-await page.waitForSelector('text=no checkout needed', { timeout: 5000 })
+await page.waitForSelector('text=Paid through PayPal', { timeout: 5000 })
 await page.waitForTimeout(500)
 await page.screenshot({ path: `${S}/10-one-click-paid.png`, fullPage: true })
 
 // 3. a cart under the threshold: paid while the agent is still running
 const m3 = await (await page.request.post(base + '/api/missions', { data: { mandate_id: md.id, goal: 'aeropress coffee maker' } })).json()
 await page.goto(base + '/#/missions/' + m3.id)
-await page.waitForSelector('text=none: paid with the PayPal account saved on this mandate', { timeout: 20000 })
+await page.waitForSelector('text=saved PayPal account, no checkout', { timeout: 20000 })
 const detail = await (await page.request.get(base + '/api/missions/' + m3.id)).json()
 if (detail.mission.status !== 'paid' || !detail.payments[0].vaulted || detail.payments[0].approve_url) throw new Error('auto-pay failed: ' + JSON.stringify(detail.payments))
 

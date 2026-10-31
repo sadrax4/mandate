@@ -128,7 +128,33 @@ func New(cfg Config, st *store.Store, pp paypal.Client, shopper *agent.Shopper, 
 	s.initMCP()
 	s.routes()
 	go s.scheduler()
+	go s.reconcileOnStart()
 	return s
+}
+
+// reconcileOnStart asks PayPal about every order our ledger shows as
+// captured (or pending) but never booked: a row written by an older build,
+// or a capture that completed while the server was down. Booking is
+// idempotent, so this is what a merchant's nightly reconciliation does.
+func (s *Server) reconcileOnStart() {
+	for _, p := range s.st.ListPayments() {
+		if p.Accounted || !store.IsCaptured(p.Status) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		order, err := s.pp.GetOrder(ctx, p.ID)
+		cancel()
+		if err != nil {
+			log.Printf("reconcile %s: PayPal lookup failed: %v", p.ID, err)
+			continue
+		}
+		if order.Status == store.PaymentCompleted {
+			s.markPaid(p.ID, order)
+			if cur, err := s.st.GetPayment(p.ID); err == nil && cur.Accounted {
+				log.Printf("reconcile %s: booked a capture the ledger had missed (%.2f %s)", p.ID, cur.Amount, cur.Currency)
+			}
+		}
+	}
 }
 
 // Close stops the standing-order scheduler. It is safe to call twice.

@@ -2187,3 +2187,36 @@ func TestNegotiationUnderACategoryRuleFailsFastWithASuggestion(t *testing.T) {
 	}
 	e.waitMission(retry["mission"].(map[string]any)["id"].(string), store.MissionAwaitingApproval)
 }
+
+func TestStartupBooksACaptureTheLedgerMissed(t *testing.T) {
+	// A row from an older build: PayPal captured the vault order at creation,
+	// the row says COMPLETED, but nothing was booked and the mission still
+	// waits for payment. A restart must repair it without anyone clicking.
+	e := newEnv(t)
+	mdID, msID, orderID := e.startAutoApproved()
+	_, _ = e.pp.Approve(orderID, true)
+	if _, err := e.pp.CaptureOrder(context.Background(), orderID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = e.st.UpdatePayment(orderID, func(x *store.Payment) { x.Status = store.PaymentCompleted; x.Accounted = false; x.Reserved = true })
+	e.srv.recomputeReserved(mdID)
+	if _, reserved := e.mandateNumbers(mdID); reserved == 0 {
+		t.Fatal("setup: the stale row must still hold its reservation")
+	}
+	cat := catalog.NewMock()
+	srv2 := New(Config{PublicURL: e.ts.URL, StaticDir: "/nonexistent", Currency: "USD"}, e.st, e.pp, agent.NewShopper(agent.Fake{}, cat, e.st), cat)
+	t.Cleanup(srv2.Close)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if pay, _ := e.st.GetPayment(orderID); pay.Accounted {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	pay, _ := e.st.GetPayment(orderID)
+	spent, reserved := e.mandateNumbers(mdID)
+	ms, _ := e.st.GetMission(msID)
+	if !pay.Accounted || spent != pay.Amount || reserved != 0 || ms.Status != store.MissionPaid {
+		t.Fatalf("startup reconcile: %+v spent=%v reserved=%v mission=%s", pay, spent, reserved, ms.Status)
+	}
+}

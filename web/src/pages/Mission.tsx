@@ -429,7 +429,8 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                 <dt>Checkout</dt>
                 <dd>{payment.vaulted ? 'none: paid with the PayPal account saved on this mandate' : 'PayPal checkout, approved by the buyer'}</dd>
               </dl>
-              {!isFinalPayment(payment.status) && (payment.approve_url || payment.status === 'PENDING') && (
+              {/* anything PayPal has not settled in our books can be checked: an open order, a pending capture, or a completed order the ledger has not booked yet */}
+              {!payment.accounted && (isCaptured(payment.status) || !isFinalPayment(payment.status)) && (
                 <div className="actions mt" style={{ justifyContent: 'flex-start' }}>
                   {/* the checkout link only helps while the buyer has not approved yet, or after a declined attempt that PayPal lets them retry */}
                   {payment.approve_url && !isCaptured(payment.status) && payment.status !== 'APPROVED' && <a className="btn paypal lg" href={payment.approve_url}>Continue to PayPal checkout</a>}
@@ -437,6 +438,7 @@ export default function MissionPage({ id, params }: { id: string; params: URLSea
                   <span className="muted">
                     {payment.status === 'PENDING'
                       ? 'The capture is pending at PayPal; it is booked automatically once it completes.'
+                      : isCaptured(payment.status) ? 'PayPal reports this order completed; check the status to book it in the ledger.'
                       : payment.status === 'APPROVED' ? 'The buyer approved at PayPal; check the status to capture.'
                       : payment.mode === 'mock' ? 'Simulated checkout page' : config?.demo_buyer_hint ? `Sandbox buyer for testing: ${config.demo_buyer_hint}` : 'Log in with a sandbox buyer account'}
                   </span>

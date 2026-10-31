@@ -45,3 +45,11 @@ func TestMCPToolsetOnlyEnablesAllowedTools(t *testing.T) {
 		t.Fatal("the scripted provider must not claim MCP support")
 	}
 }
+
+func TestGatewayModeDoesNotClaimMCP(t *testing.T) {
+	direct := NewAnthropic(AnthropicOptions{APIKey: "x"})
+	gateway := NewAnthropic(AnthropicOptions{AuthToken: "x", BaseURL: "https://openrouter.ai/api"})
+	if !direct.SupportsMCP() || gateway.SupportsMCP() {
+		t.Fatalf("SupportsMCP: direct=%v gateway=%v", direct.SupportsMCP(), gateway.SupportsMCP())
+	}
+}

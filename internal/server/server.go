@@ -301,7 +301,7 @@ func (s *Server) handleDemoMandate(w http.ResponseWriter, _ *http.Request) {
 	}
 	md := &mandate.Mandate{
 		ID: store.NewID("mnd"), Name: "Desk refresh", Currency: s.cfg.Currency, TotalBudget: 300, MaxPerItem: 150, AutoApproveUnder: 40,
-		AllowedCategories: []string{"computers", "office", "audio"}, BlockedMerchants: []string{"temu.com"}, MinRating: 4, SavePaymentMethod: true,
+		AllowedCategories: []string{"computers", "office", "audio", "services"}, BlockedMerchants: []string{"temu.com"}, MinRating: 4, SavePaymentMethod: true,
 		Demo: true, CreatedAt: time.Now(),
 	}
 	if err := md.Validate(); err != nil {
@@ -411,8 +411,6 @@ func (s *Server) startAgent(m *store.Mission, feedback string) {
 
 // --- standing orders ---
 
-// startRun runs a standing order's goal once more as a new mission and
-// schedules the next run. It is used by the scheduler and by "Run now".
 // standingOrderReady checks that a standing order can run: it is one, and
 // its mandate still has budget. A mandate whose budget is spent stops the
 // order for good (the README promises that), before a model turn is spent;
@@ -830,7 +828,11 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	s.payMu.Unlock()
 
 	// Phase 2, without the lock: talk to PayPal. Webhooks, returns and cancels
-	// for other orders keep flowing meanwhile.
+	// for other orders keep flowing meanwhile. The calls run on a context the
+	// caller cannot cancel: a closed tab or an expiring agent run must never
+	// turn a capture PayPal may have completed into a "decline".
+	ctx, cancel := payContext(ctx)
+	defer cancel()
 	order, err := s.pp.CreateOrder(ctx, req)
 	if err != nil && req.VaultID != "" {
 		// The saved account could not be charged (token revoked, vault disabled on
@@ -938,6 +940,13 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 	}
 	pay, _ = s.st.GetPayment(pay.ID)
 	return pay, nil
+}
+
+// payContext derives the context for a call that moves money: it keeps the
+// caller's values but not its cancellation, with a timeout of its own, so a
+// client disconnect cannot abandon an order or capture half-way.
+func payContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 }
 
 // forgetSavedPayment removes the saved PayPal account from a mandate after it
@@ -1232,7 +1241,9 @@ func (s *Server) handleSyncPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if order.Status == "APPROVED" {
-		if cap, err := s.pp.CaptureOrder(r.Context(), pay.ID); err == nil { // re-reads an already captured order
+		pctx, cancel := payContext(r.Context())
+		defer cancel()
+		if cap, err := s.pp.CaptureOrder(pctx, pay.ID); err == nil { // re-reads an already captured order
 			order = cap
 		} else {
 			writeErr(w, 502, "PayPal capture failed: "+err.Error())
@@ -1528,7 +1539,9 @@ func (s *Server) handlePayPalReturn(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/#/missions/"+pay.MissionID+"?payment="+returnOutcome(pay), http.StatusFound)
 		return
 	}
-	order, err := s.pp.CaptureOrder(r.Context(), token) // re-reads an already captured order
+	pctx, cancel := payContext(r.Context())
+	defer cancel()
+	order, err := s.pp.CaptureOrder(pctx, token) // re-reads an already captured order
 	if err != nil {
 		s.st.AddEvent(pay.MissionID, "error", "PayPal capture failed: "+err.Error(), nil)
 		s.payMu.Lock()
@@ -1614,7 +1627,9 @@ func (s *Server) handlePayPalWebhook(w http.ResponseWriter, r *http.Request) {
 		// Never capture a withdrawn, voided or expired order, nor one that is
 		// already captured or pending.
 		if !store.IsFinalPayment(pay.Status) && !store.IsCaptured(pay.Status) {
-			order, err := s.pp.CaptureOrder(r.Context(), orderID) // re-reads an already captured order
+			pctx, cancel := payContext(r.Context())
+			defer cancel()
+			order, err := s.pp.CaptureOrder(pctx, orderID) // re-reads an already captured order
 			if err != nil {
 				s.st.AddEvent(pay.MissionID, "error", "capture after webhook failed: "+err.Error(), nil)
 				writeErr(w, 502, "capture failed")

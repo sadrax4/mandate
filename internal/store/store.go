@@ -181,6 +181,19 @@ type Proposal struct {
 	DecidedAt *time.Time       `json:"decided_at,omitempty"`
 }
 
+// clone returns a deep copy of the proposal (cart and decision slices are
+// never shared with the stored row).
+func (p *Proposal) clone() Proposal {
+	c := *p
+	c.Cart = p.Cart.Clone()
+	c.Decision = p.Decision.Clone()
+	if p.DecidedAt != nil {
+		t := *p.DecidedAt
+		c.DecidedAt = &t
+	}
+	return c
+}
+
 // Payment is a PayPal order created for a proposal.
 type Payment struct {
 	ID         string  `json:"id"` // PayPal order ID
@@ -354,7 +367,11 @@ func Open(path string) (*Store, error) {
 			demo.Demo = true
 		}
 	}
+	migrated := st.s.Version != currentVersion
 	st.s.Version = currentVersion
+	if migrated {
+		st.persistNow() // a second restart must not run the migrations again
+	}
 	return st, nil
 }
 
@@ -456,7 +473,7 @@ func NewID(prefix string) string {
 func (st *Store) PutMandate(m *mandate.Mandate) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	c := *m
+	c := m.Clone()
 	st.s.Mandates[m.ID] = &c
 	st.persistNow()
 }
@@ -468,7 +485,7 @@ func (st *Store) GetMandate(id string) (*mandate.Mandate, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	c := *m
+	c := m.Clone()
 	return &c, nil
 }
 
@@ -477,7 +494,7 @@ func (st *Store) ListMandates() []*mandate.Mandate {
 	defer st.mu.RUnlock()
 	out := make([]*mandate.Mandate, 0, len(st.s.Mandates))
 	for _, m := range st.s.Mandates {
-		c := *m
+		c := m.Clone()
 		out = append(out, &c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
@@ -495,6 +512,8 @@ func (st *Store) UpdateMandate(id string, fn func(m *mandate.Mandate) error) err
 	if err := fn(m); err != nil {
 		return err
 	}
+	detached := m.Clone() // never keep slices the caller still mutates
+	*m = detached
 	st.persistNow()
 	return nil
 }
@@ -557,7 +576,7 @@ func (st *Store) ListMissions(mandateID string) []*Mission {
 func (st *Store) PutProposal(p *Proposal) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	c := *p
+	c := p.clone()
 	st.s.Proposals[p.ID] = &c
 	st.persistNow()
 }
@@ -569,7 +588,7 @@ func (st *Store) GetProposal(id string) (*Proposal, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	c := *p
+	c := p.clone()
 	return &c, nil
 }
 
@@ -581,8 +600,10 @@ func (st *Store) UpdateProposal(id string, fn func(p *Proposal)) (*Proposal, err
 		return nil, ErrNotFound
 	}
 	fn(p)
+	detached := p.clone() // never keep slices the caller still mutates
+	*p = detached
 	st.persistNow()
-	c := *p
+	c := p.clone()
 	return &c, nil
 }
 
@@ -594,7 +615,7 @@ func (st *Store) ListProposals(missionID string) []*Proposal {
 		if missionID != "" && p.MissionID != missionID {
 			continue
 		}
-		c := *p
+		c := p.clone()
 		out = append(out, &c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })

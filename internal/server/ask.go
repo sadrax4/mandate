@@ -50,7 +50,8 @@ func (s *Server) initMCP() {
 	s.mcp.done = make(chan struct{})
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.PayPalMCP))
 	ts, hasToken := s.pp.(tokenSource)
-	_, capable := s.shopper.Provider.(agent.MCPCapable)
+	mc, capable := s.shopper.Provider.(agent.MCPCapable)
+	capable = capable && mc.SupportsMCP()
 	switch {
 	case mode == "off":
 		s.setMCP(false, "", nil, 0, "disabled with PAYPAL_MCP=off")
@@ -174,7 +175,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	capable, _ := s.shopper.Provider.(agent.MCPCapable)
 	ts, _ := s.pp.(tokenSource)
-	if capable == nil || ts == nil {
+	if capable == nil || !capable.SupportsMCP() || ts == nil {
 		writeErr(w, 503, "the order assistant is not available")
 		return
 	}

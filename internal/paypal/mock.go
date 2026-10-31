@@ -50,7 +50,10 @@ func NewMock(publicURL string) *Mock {
 func (m *Mock) Mode() string { return "mock" }
 
 // CreateOrder implements Client.
-func (m *Mock) CreateOrder(_ context.Context, req CreateOrderRequest) (*Order, error) {
+func (m *Mock) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Order, error) {
+	if err := ctx.Err(); err != nil { // like a real HTTP call on a cancelled context
+		return nil, err
+	}
 	if m.OnCreate != nil {
 		m.OnCreate(req)
 	}
@@ -143,7 +146,10 @@ func (m *Mock) Details(orderID string) (*Order, []OrderItem, error) {
 }
 
 // CaptureOrder implements Client.
-func (m *Mock) CaptureOrder(_ context.Context, orderID string) (*Order, error) {
+func (m *Mock) CaptureOrder(ctx context.Context, orderID string) (*Order, error) {
+	if err := ctx.Err(); err != nil { // like a real HTTP call on a cancelled context
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o, ok := m.orders[orderID]

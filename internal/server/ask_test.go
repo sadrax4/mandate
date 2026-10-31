@@ -28,6 +28,8 @@ type mcpProvider struct {
 	seen string
 }
 
+func (p *mcpProvider) SupportsMCP() bool { return true }
+
 func (p *mcpProvider) NewMCPSession(system string, m agent.MCPServer) agent.Session {
 	p.got = m
 	p.seen = system

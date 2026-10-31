@@ -113,3 +113,42 @@ func TestMigrationMarksThePreexistingDemoMandate(t *testing.T) {
 		t.Fatalf("demo mandates: %d", demos)
 	}
 }
+
+func TestOpenPersistsMigrationsAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"missions":{"msn_1":{"id":"msn_1","status":"running"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), fmt.Sprintf(`"version": %d`, currentVersion)) || !strings.Contains(string(data), `"status": "failed"`) {
+		t.Fatalf("migration not on disk: %s", data)
+	}
+}
+
+func TestProposalCopiesShareNothing(t *testing.T) {
+	st, _ := Open("")
+	p := &Proposal{ID: "p1", Cart: mandate.Cart{Items: []mandate.CartItem{{ProductID: "a", Title: "A"}}}, Decision: mandate.Decision{Checks: []string{"x"}}}
+	st.PutProposal(p)
+	p.Cart.Items[0].Title = "changed by the caller"
+	got, _ := st.GetProposal("p1")
+	if got.Cart.Items[0].Title != "A" {
+		t.Fatal("stored proposal shares the caller's cart")
+	}
+	got.Decision.Checks[0] = "changed by a reader"
+	again, _ := st.GetProposal("p1")
+	if again.Decision.Checks[0] != "x" {
+		t.Fatal("stored proposal shares a reader's decision")
+	}
+	md := &mandate.Mandate{ID: "m1", Name: "x", Currency: "USD", TotalBudget: 1, AllowedCategories: []string{"a"}}
+	st.PutMandate(md)
+	md.AllowedCategories[0] = "changed"
+	if gm, _ := st.GetMandate("m1"); gm.AllowedCategories[0] != "a" {
+		t.Fatal("stored mandate shares the caller's list")
+	}
+}

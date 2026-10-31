@@ -21,8 +21,12 @@ type MCPServer struct {
 
 // MCPCapable is implemented by providers that can attach MCP tools to a
 // session (the Anthropic provider; the scripted offline agent cannot).
+// SupportsMCP is false when the provider is configured in a way that drops
+// the MCP connector (a compatibility gateway), so callers never advertise
+// tools the model will not get.
 type MCPCapable interface {
 	NewMCPSession(system string, mcp MCPServer) Session
+	SupportsMCP() bool
 }
 
 // readOnlyVerb matches tool names whose verb is a read: get_order,

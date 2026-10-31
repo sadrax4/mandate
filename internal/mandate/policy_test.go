@@ -142,3 +142,13 @@ func TestAmendUnblocksByDomain(t *testing.T) {
 		t.Fatalf("amend: %v %q %v", out.BlockedMerchants, desc, err)
 	}
 }
+
+func TestAmendBudgetRoundsTheCommittedSum(t *testing.T) {
+	m := Mandate{Name: "x", Currency: "USD", TotalBudget: 100, Spent: 39.95, Reserved: 10.05}
+	if _, _, err := m.Amend("total_budget", 50); err != nil {
+		t.Fatalf("50.00 is exactly what is committed and must be allowed: %v", err)
+	}
+	if _, _, err := m.Amend("total_budget", 49.99); err == nil {
+		t.Fatal("below the committed sum must be refused")
+	}
+}

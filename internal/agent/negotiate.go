@@ -51,6 +51,26 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 		return
 	}
 	service := strings.TrimSpace(m.Goal)
+	// A deal becomes a cart in the services category: if the mandate cannot
+	// buy services at all, say so now instead of after twelve model turns.
+	probe := mandate.Cart{Currency: md.Currency, Items: []mandate.CartItem{{ProductID: "svc_" + missionID, Title: service, Merchant: "Seller agent", Category: "services", UnitPrice: 0.01, Currency: md.Currency, Quantity: 1}}}
+	for _, v := range md.Evaluate(probe).Violations {
+		if v.Code != "category_not_allowed" {
+			continue
+		}
+		sug := &store.Suggestion{Field: "allowed_categories", Value: []string{"services"}, Reason: "a negotiated service is in the services category, which this mandate does not allow"}
+		summary := "This mandate does not allow the services category, so no negotiated deal could be approved under it. Allow services (the suggested change) and retry."
+		_, _ = s.Store.UpdateMission(missionID, func(x *store.Mission) {
+			x.Kind = "negotiate"
+			x.Suggestion = sug
+			x.Summary = summary
+			x.Status = store.MissionNoProposal
+		})
+		s.Store.AddEvent(missionID, "policy_block", "negotiation not started: "+v.Message, map[string]any{"decision_violation": v})
+		s.Store.AddEvent(missionID, "suggestion", "agent suggests a mandate change: allow services ("+sug.Reason+")", map[string]any{"field": sug.Field, "value": sug.Value})
+		s.Store.AddEvent(missionID, "done", summary, nil)
+		return
+	}
 	list := mandate.Round(limit * 1.45)
 	floor := mandate.Round(limit * 0.82)
 	neg := &store.Negotiation{Service: service, Seller: "Seller agent", ListPrice: list, Limit: limit, Rounds: []store.NegotiationRound{}}

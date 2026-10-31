@@ -107,8 +107,8 @@ func (m Mandate) Amend(field string, value any) (Mandate, string, error) {
 		if *cur == v {
 			return m, "", fmt.Errorf("%s is already %.2f", field, v)
 		}
-		if field == "total_budget" && v < m.Spent+m.Reserved {
-			return m, "", fmt.Errorf("total_budget cannot go below what is already spent or reserved (%.2f)", m.Spent+m.Reserved)
+		if committed := Round(m.Spent + m.Reserved); field == "total_budget" && v < committed {
+			return m, "", fmt.Errorf("total_budget cannot go below what is already spent or reserved (%.2f)", committed)
 		}
 		desc = fmt.Sprintf("%s %.2f → %.2f", field, *cur, v)
 		*cur = v
@@ -290,7 +290,6 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 	return d
 }
 
-// Validate checks the mandate itself is coherent.
 // Bounds on what a mandate may hold. Money is capped well below where
 // float64 arithmetic (and JSON encoding of the results) stops being exact.
 const (
@@ -302,6 +301,7 @@ const (
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
+// Validate checks the mandate itself is coherent and inside the bounds.
 func (m Mandate) Validate() error {
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("name is required")
@@ -340,6 +340,33 @@ func (m Mandate) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Clone returns a copy that shares no slice with the original.
+func (m Mandate) Clone() Mandate {
+	out := m
+	out.AllowedCategories = append([]string(nil), m.AllowedCategories...)
+	out.BlockedMerchants = append([]string(nil), m.BlockedMerchants...)
+	if m.VaultedAt != nil {
+		t := *m.VaultedAt
+		out.VaultedAt = &t
+	}
+	return out
+}
+
+// Clone returns a copy of the cart that shares no slice with the original.
+func (c Cart) Clone() Cart {
+	out := c
+	out.Items = append([]CartItem(nil), c.Items...)
+	return out
+}
+
+// Clone returns a copy of the decision that shares no slice with the original.
+func (d Decision) Clone() Decision {
+	out := d
+	out.Violations = append([]Violation(nil), d.Violations...)
+	out.Checks = append([]string(nil), d.Checks...)
+	return out
 }
 
 // Redacted returns the mandate as the API shows it: the saved PayPal token

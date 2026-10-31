@@ -7,7 +7,7 @@ const DEMO_GOALS: { goal: string; note?: string; kind?: string }[] = [
   { goal: 'A mechanical keyboard with brown switches and a USB-C hub with HDMI, both under $120' },
   { goal: 'Noise cancelling headphones for open-office work' },
   { goal: 'A large felt desk mat under $40' },
-  { goal: 'A gooseneck kettle and a coffee grinder for pour-over', note: 'outside a computers/office/audio mandate: watch the agent explain' },
+  { goal: 'A gooseneck kettle and a coffee grinder for pour-over', note: 'kitchen gear, outside the demo mandate\'s categories: watch the agent explain' },
   { goal: 'A two-hour product photo shoot for 20 items', kind: 'negotiate', note: 'two agents negotiate the price, you approve, PayPal settles' },
 ]
 

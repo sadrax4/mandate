@@ -76,6 +76,10 @@ func (a *Anthropic) NewSession(system string) Session {
 	return &anthropicSession{a: a, system: system}
 }
 
+// SupportsMCP implements MCPCapable: the MCP connector is an Anthropic-only
+// extension, so a compatibility gateway cannot carry it.
+func (a *Anthropic) SupportsMCP() bool { return !a.Compat }
+
 // NewMCPSession implements MCPCapable: the session carries the MCP server
 // definition and the allowlisted toolset on every request.
 func (a *Anthropic) NewMCPSession(system string, mcp MCPServer) Session {
@@ -119,7 +123,7 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 	if s.mcp != nil && len(s.mcp.AllowedTools) > 0 && !s.a.Compat {
 		betaTools = append(betaTools, mcpToolset(s.mcp))
 	}
-	var finalText strings.Builder
+	var finalText strings.Builder // the text of the latest response, every block of it
 	for turn := 0; turn < s.a.MaxTurns; turn++ {
 		params := anthropic.BetaMessageNewParams{
 			Model:     s.a.Model,
@@ -157,11 +161,17 @@ func (s *anthropicSession) Send(ctx context.Context, userText string, tools []To
 		s.history = append(s.history, resp.ToParam())
 
 		var results []anthropic.BetaContentBlockParamUnion
+		sawText := false
 		for _, block := range resp.Content {
 			switch v := block.AsAny().(type) {
 			case anthropic.BetaTextBlock:
 				if strings.TrimSpace(v.Text) != "" {
-					finalText.Reset()
+					if !sawText {
+						finalText.Reset() // a new response replaces the previous one's text
+						sawText = true
+					} else {
+						finalText.WriteString("\n\n")
+					}
 					finalText.WriteString(v.Text)
 					emit(Event{Type: "assistant", Message: v.Text})
 				}

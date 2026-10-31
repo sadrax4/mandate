@@ -2134,3 +2134,56 @@ func TestStandingOrderStopsWhenTheBudgetIsUsedUp(t *testing.T) {
 		t.Fatalf("standing order must stop: %+v", m)
 	}
 }
+
+func TestOneClickPaymentSurvivesAClientDisconnect(t *testing.T) {
+	// The browser goes away while the saved account is being charged: the
+	// capture must still complete and be booked, never read as a decline.
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Household", "total_budget": 400, "save_payment_method": true}, &md)
+	mdID := md["id"].(string)
+	mid, pid := e.pendingProposal(mdID)
+	var ap map[string]any
+	e.post("/api/proposals/"+pid+"/approve", nil, &ap)
+	e.payThroughMockCheckout(ap["approve_url"].(string))
+	e.waitMission(mid, store.MissionPaid)
+	vault := e.mandateVault(mdID)
+
+	mid2, pid2 := e.pendingProposal(mdID)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the request is already gone
+	pay, err := e.srv.createPayment(ctx, pid2)
+	if err != nil {
+		t.Fatalf("a cancelled request must not abandon the charge: %v", err)
+	}
+	if !pay.Accounted || pay.Status != store.PaymentCompleted {
+		t.Fatalf("not booked: %+v", pay)
+	}
+	if e.mandateVault(mdID) != vault {
+		t.Fatal("the saved account must survive")
+	}
+	e.waitMission(mid2, store.MissionPaid)
+}
+
+func TestNegotiationUnderACategoryRuleFailsFastWithASuggestion(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Desk refresh", "total_budget": 300, "allowed_categories": []string{"computers", "office"}}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "A two-hour product photo shoot", "kind": "negotiate"}, &ms)
+	out := e.waitMission(ms["id"].(string), store.MissionNoProposal)
+	m := out["mission"].(map[string]any)
+	sug, _ := m["suggestion"].(map[string]any)
+	if sug == nil || sug["field"] != "allowed_categories" {
+		t.Fatalf("expected the services suggestion, got %v", m["suggestion"])
+	}
+	if n, _ := m["negotiation"].(map[string]any); n != nil && len(n["rounds"].([]any)) > 0 {
+		t.Fatalf("no negotiation round should have been spent: %v", n)
+	}
+	// applying the suggestion retries and this time the deal goes through
+	var retry map[string]any
+	if code := e.post("/api/missions/"+ms["id"].(string)+"/apply-suggestion", nil, &retry); code != 201 {
+		t.Fatalf("apply: %d %v", code, retry)
+	}
+	e.waitMission(retry["mission"].(map[string]any)["id"].(string), store.MissionAwaitingApproval)
+}

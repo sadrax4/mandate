@@ -1,6 +1,6 @@
 // The scenes of the Mandate demo video. Usage:
 //   BASE_URL=http://localhost:8099 MODE=mock node scenes.cjs intro mandate buy ...
-//   BASE_URL=http://23.27.20.150:8080 MODE=live PP_EMAIL=... PP_PASS=... node scenes.cjs buy
+//   BASE_URL=https://mandate-paypal.duckdns.org:8444 MODE=live PP_EMAIL=... PP_PASS=... node scenes.cjs buy
 // MODE=live drives the real PayPal sandbox checkout; MODE=mock uses the built-in simulator.
 const L = require('./lib.cjs')
 const { click, type, sleep } = L

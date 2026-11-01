@@ -14,7 +14,7 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (Oct
 
 **Demo video (2:52): https://youtu.be/IL1Sj20_D8k**
 
-**Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
+**Live demo: https://mandate-paypal.duckdns.org:8444** (also at http://23.27.20.150:8080; PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
 To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
 
 ![Live sandbox run: a real Channel3 product, Claude's reasoning, the PayPal order captured after a human approved](docs/screenshots/live-mission-paid.png)
@@ -249,6 +249,8 @@ docker build -t mandate . && docker run --rm -p 8080:8080 --env-file .env mandat
 ```
 
 On your own server, `docker compose up -d --build` runs it with a persistent data volume, and `--profile https` adds Caddy with automatic certificates for a domain. See [deploy/README.md](deploy/README.md).
+
+The live demo runs from the release installer (`deploy/install.sh`) with Caddy in front on port 8444 and a Let's Encrypt certificate obtained with the DNS-01 challenge, because ports 80 and 443 of that server belong to another service. After the certificate is in place, set `PUBLIC_URL` in `/opt/mandate/.env` to the HTTPS address so PayPal returns buyers to it. PayPal delivers webhooks only to port 443, so a server with a free port 443 can register them; the demo relies on capture-on-return and the reconciliation endpoint instead.
 
 ## Sponsor tools used
 

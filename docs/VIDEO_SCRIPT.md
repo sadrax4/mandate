@@ -2,7 +2,7 @@
 
 Published: https://youtu.be/IL1Sj20_D8k
 
-Recorded live on http://23.27.20.150:8080 (PayPal sandbox, Claude, Channel3 catalog) by `scripts/video`:
+Recorded live on http://23.27.20.150:8080, now also https://mandate-paypal.duckdns.org:8444 (PayPal sandbox, Claude, Channel3 catalog) by `scripts/video`:
 a real browser at 1920×1080 with a visible cursor, human-paced typing, burned-in captions and an `.srt`
 with the same text. Waits on the agent are sped up and captioned "(sped up)". Nothing is faked: the
 PayPal sandbox login, the capture and the receipt IDs on screen are real sandbox objects (no real money).
@@ -28,7 +28,7 @@ and makes no claim about the assistant.
 
 ```bash
 cd scripts/video && npm i && npx playwright install chromium
-export BASE_URL=http://23.27.20.150:8080 MODE=live MANDATE_NAME="Desk setup"   # a fresh mandate name each time,
+export BASE_URL=https://mandate-paypal.duckdns.org:8444 MODE=live MANDATE_NAME="Desk setup"   # a fresh mandate name each time,
 for s in intro mandate buy autopay reject negotiate ledger insights; do node scenes.cjs $s; done   # so the PayPal login shows again
 node mkorder.cjs scenes intro,mandate,buy,autopay,reject,negotiate,ledger,insights > order.json
 node build.cjs order.json out        # out/mandate-demo.mp4 and out/mandate-demo.srt

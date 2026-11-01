@@ -2,6 +2,10 @@
 
 Everything here was built during the PayPal AI Hackathon submission period (Oct 1 – Nov 12, 2026). Newest first.
 
+## 2026-11-02
+
+- deploy: the live demo is also served over HTTPS at https://mandate-paypal.duckdns.org:8444 (Caddy and a Let's Encrypt certificate from the DNS-01 challenge); `PUBLIC_URL` points there so PayPal returns buyers to HTTPS. The plain HTTP address keeps working.
+
 ## 2026-11-01
 
 - video: `scripts/video` records and captions the demo (Playwright screencast, cursor, burned-in captions, SRT) from the live app; the recorded video and how to redo it are in `docs/VIDEO_SCRIPT.md`. Known: PayPal's hosted sandbox MCP answers tool calls with `Unsupported cache mode: default` today, so the order assistant falls back to the ledger and says so.

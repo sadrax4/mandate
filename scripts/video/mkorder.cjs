@@ -8,6 +8,6 @@ p{font-size:44px;line-height:1.3;margin:28px 0 0;color:#cfe3e0;max-width:1400px}
 .u{font-size:40px;margin-top:16px;color:#fff;font-weight:600}
 .s{font-size:30px;color:#9fbab6;margin-top:36px}`
 const title = { type: 'card', name: 'title', seconds: 4, html: `<style>${css}</style><div class="w"><div class="k">PayPal AI Hackathon</div><h1>Mandate</h1><p>Give an AI agent a budget.<br>Keep the final say.</p></div>`, caps: [{ start: 0.6, end: 3.6, text: 'Mandate: give an AI agent a budget. Keep the final say.' }] }
-const end = { type: 'card', name: 'end', seconds: 5, html: `<style>${css}</style><div class="w"><div class="k">The agent proposes. You approve. PayPal pays.</div><h1 style="font-size:96px">Mandate</h1><div class="u">github.com/sadrax4/mandate</div><div class="u">Live demo: 23.27.20.150:8080</div><div class="s">Go · React · AG Grid · PayPal Orders, Vault and MCP · Claude · Channel3</div></div>`, caps: [] }
+const end = { type: 'card', name: 'end', seconds: 5, html: `<style>${css}</style><div class="w"><div class="k">The agent proposes. You approve. PayPal pays.</div><h1 style="font-size:96px">Mandate</h1><div class="u">github.com/sadrax4/mandate</div><div class="u">Live demo: mandate-paypal.duckdns.org:8444</div><div class="s">Go · React · AG Grid · PayPal Orders, Vault and MCP · Claude · Channel3</div></div>`, caps: [] }
 const scenes = list.split(',').map((n) => ({ type: 'scene', name: n, dir: `${dir}/${n}` }))
 console.log(JSON.stringify([title, ...scenes, end]))

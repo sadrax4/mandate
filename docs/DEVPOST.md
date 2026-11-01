@@ -65,7 +65,7 @@ go, react, typescript, ag-grid, ag-charts, paypal, paypal-orders-api, paypal-vau
 ## Try it out links
 - GitHub repo: https://github.com/sadrax4/mandate
 - Demo video: https://youtu.be/IL1Sj20_D8k
-- Live demo: http://23.27.20.150:8080 (PayPal sandbox, Claude Opus 5.5, Channel3 catalog; sandbox buyer login is in the README)
+- Live demo: https://mandate-paypal.duckdns.org:8444 (PayPal sandbox, Claude Opus 5.5, Channel3 catalog; also at http://23.27.20.150:8080; sandbox buyer login is in the README)
 
 ## AI tools disclosure (Devpost asks for this)
 Claude Code (Anthropic) was used as a pair programmer for the implementation, directed and reviewed by the author. Inside the product, the shopping agent and the order assistant run on Claude through the Anthropic API.
@@ -76,7 +76,7 @@ Claude Code (Anthropic) was used as a pair programmer for the implementation, di
 PayPal tools (sandbox):
 - PayPal REST Orders v2 API: when a human approves the agent's proposal, the server obtains an OAuth2 client-credentials token and creates an order (intent CAPTURE) for the exact cart, with line items, an amount breakdown and return/cancel URLs in payment_source.paypal.experience_context. The buyer is redirected to PayPal's approval link; on return the server captures the order, reconciles it with GET /v2/checkout/orders/{id}, and updates the mandate's budget. PayPal-Request-Id (set to the proposal ID) makes order creation idempotent, and ORDER_ALREADY_CAPTURED is tolerated so a double return cannot double-spend.
 - PayPal vault (saved payment methods): a mandate can ask to save the buyer's PayPal account at the first checkout (payment_source.paypal.attributes.vault, store_in_vault ON_SUCCESS). The capture response's vault token is stored on the mandate; later orders are created with payment_source.paypal.vault_id and captured server-side, so approved carts pay with one click and carts under the auto-approve threshold pay with none. Dead tokens are forgotten and the flow falls back to checkout. VAULT.PAYMENT-TOKEN.CREATED webhooks and order reconciliation cover the asynchronous case.
-- PayPal Webhooks: CHECKOUT.ORDER.APPROVED, PAYMENT.CAPTURE.COMPLETED, PAYMENT.CAPTURE.REFUNDED/REVERSED/DENIED, CHECKOUT.ORDER.VOIDED and VAULT.PAYMENT-TOKEN.CREATED are handled, each verified through /v1/notifications/verify-webhook-signature before the ledger is touched. The hosted demo runs over plain HTTP, so webhooks are not registered there; it relies on capture-on-return plus the reconciliation endpoint, and the webhook path is covered by tests.
+- PayPal Webhooks: CHECKOUT.ORDER.APPROVED, PAYMENT.CAPTURE.COMPLETED, PAYMENT.CAPTURE.REFUNDED/REVERSED/DENIED, CHECKOUT.ORDER.VOIDED and VAULT.PAYMENT-TOKEN.CREATED are handled, each verified through /v1/notifications/verify-webhook-signature before the ledger is touched. The hosted demo is served on port 8444 and PayPal delivers webhooks only to port 443, so webhooks are not registered there; it relies on capture-on-return plus the reconciliation endpoint, and the webhook path is covered by tests.
 - PayPal MCP server (PayPal Agent Toolkit): the order assistant connects Claude to https://mcp.sandbox.paypal.com through the Anthropic MCP connector, authenticated with the same client-credentials token. The server performs the MCP handshake itself at startup to verify credentials and discover the tool catalogue, then enables only read-only tools (get_order, list_transactions, get_shipment_tracking, get_refund, list_disputes, get_invoice, ...) in an mcp_toolset; create, pay, refund and dispute-accepting tools are never offered to the model.
 - PayPal sandbox business and personal (buyer) accounts for end-to-end testing.
 
@@ -89,7 +89,7 @@ Sponsor tools:
 - AG Grid Community (column groups, column filters, quick filter, custom cell renderers, keyboard row opening, CSV export, Theming API) and AG Charts Community (budget use per mandate, spend by category, merchant and day) power the grids and the Insights page.
 
 ### Testing instructions or credentials
-Open http://23.27.20.150:8080 (plain HTTP, not HTTPS). It runs with the PayPal sandbox, Claude Opus 5.5 and the live Channel3 catalog; the status at the top right reads "PayPal sandbox · Claude · Channel3 · PayPal MCP" when PayPal's MCP server is reachable (hover it for the list of read-only tools).
+Open https://mandate-paypal.duckdns.org:8444 (HTTPS on port 8444; the same app is also at http://23.27.20.150:8080). It runs with the PayPal sandbox, Claude Opus 5.5 and the live Channel3 catalog; the status at the top right reads "PayPal sandbox · Claude · Channel3 · PayPal MCP" when PayPal's MCP server is reachable (hover it for the list of read-only tools).
 
 1. On the dashboard click "Create demo mandate" (it becomes "Show demo mandate" once the demo mandate exists), or "New mandate" to set your own budget, per-item cap, categories, blocked merchants, minimum rating, approval threshold and whether to save your PayPal account at the first checkout.
 2. Type a goal in the box at the top of the dashboard, such as "a mechanical keyboard with brown switches under $120" or "a USB-C hub with HDMI under $40", and click "Start mission". The line under the box shows which mandate it runs under; there you can also choose "Repeat monthly" to make it a standing order, or "Hire a service" for an agent-to-agent negotiation.

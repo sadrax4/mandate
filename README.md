@@ -15,9 +15,9 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (Oct
 **Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
 To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
 
-![A paid mission: the cart the agent proposed inside the mandate, the PayPal receipt, and how the agent got there](docs/screenshots/mission-paid.png)
+![Live sandbox run: a real Channel3 product, Claude's reasoning, the PayPal order captured after a human approved](docs/screenshots/live-mission-paid.png)
 
-*The mission page after a human approved the agent's cart: what was bought and why, the PayPal receipt, the story of how the agent got there, and every product it compared. Taken in offline demo mode; the live demo runs the same flow on the PayPal sandbox with Claude and the live Channel3 catalog ([a live run](docs/screenshots/live-mission-paid.png), earlier design).*
+*A real run on the live demo: asked for "a mechanical keyboard with brown switches under $120", the agent searched Channel3 twice, picked the one brown-switch keyboard that has a rating, explained which alternatives it passed over and why, and the PayPal sandbox order was captured after a human approved it. The receipt shows the PayPal order and capture IDs.*
 
 ![Seventeen seconds of the offline demo: goal typed, agent proposes, human approves, simulated PayPal checkout, captured, insights](docs/demo.gif)
 
@@ -59,7 +59,7 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 |---|---|
 | ![Dashboard](docs/screenshots/dashboard.png) Dashboard: one goal bar, what needs approval, mandates with budget bars, standing orders, recent missions | ![Paid](docs/screenshots/mission-paid.png) Captured payment with PayPal order and capture IDs |
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
-| ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on (live sandbox) | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after a live sandbox payment (earlier design) |
+| ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on (live sandbox) | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after a live sandbox payment |
 | ![Spending insights](docs/screenshots/insights.png) Spending insights: AG Charts over the ledger, AG Grid of every item bought | ![Suggestion](docs/screenshots/suggestion.png) A goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries |
 | ![One-click payment](docs/screenshots/one-click-paid.png) Second purchase on a mandate with a saved PayPal account: approved and captured with one click, no checkout | ![Standing orders](docs/screenshots/standing-orders.png) Standing orders on the dashboard: the goal re-runs on schedule, inside the mandate, with Run now and Stop |
 | ![Agent-to-agent negotiation](docs/screenshots/negotiation.png) Agent-to-agent: the buyer agent negotiates a service under the mandate's limit, the seller agent concedes, the human approves | |

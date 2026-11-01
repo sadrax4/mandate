@@ -12,6 +12,8 @@ You give the agent a *mandate*: a budget, a per-item cap, allowed categories, bl
 
 Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (October–November 2026) with Go, Claude, PayPal Orders v2, AG Grid, Channel3 and Render.
 
+**Demo video (2:52): https://youtu.be/IL1Sj20_D8k**
+
 **Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
 To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
 

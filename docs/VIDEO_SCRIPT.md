@@ -1,5 +1,7 @@
 # Demo video (2:52, English captions, no narration, no music)
 
+Published: https://youtu.be/IL1Sj20_D8k
+
 Recorded live on http://23.27.20.150:8080 (PayPal sandbox, Claude, Channel3 catalog) by `scripts/video`:
 a real browser at 1920×1080 with a visible cursor, human-paced typing, burned-in captions and an `.srt`
 with the same text. Waits on the agent are sped up and captioned "(sped up)". Nothing is faked: the

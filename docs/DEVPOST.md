@@ -64,6 +64,7 @@ go, react, typescript, ag-grid, ag-charts, paypal, paypal-orders-api, paypal-vau
 
 ## Try it out links
 - GitHub repo: https://github.com/sadrax4/mandate
+- Demo video: https://youtu.be/IL1Sj20_D8k
 - Live demo: http://23.27.20.150:8080 (PayPal sandbox, Claude Opus 5.5, Channel3 catalog; sandbox buyer login is in the README)
 
 ## AI tools disclosure (Devpost asks for this)

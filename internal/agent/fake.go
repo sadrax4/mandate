@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mandate/internal/mandate"
 )
 
 // Fake is a scripted provider used by the tests and by the offline demo mode
@@ -39,7 +41,10 @@ type fakeSession struct {
 	goal     string
 	lastPick []string
 	delay    time.Duration
+	budget   float64 // the mandate's total budget, read from the first prompt
 }
+
+var reBudget = regexp.MustCompile(`"total_budget":\s*([0-9.]+)`)
 
 // pause waits for d unless the mission is cancelled first.
 func pause(ctx context.Context, d time.Duration) error {
@@ -77,6 +82,9 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 	}
 	if m := reGoal.FindStringSubmatch(userText); m != nil {
 		s.goal = strings.TrimSpace(m[1])
+	}
+	if m := reBudget.FindStringSubmatch(userText); m != nil {
+		s.budget, _ = strconv.ParseFloat(m[1], 64)
 	}
 	feedback := strings.Contains(userText, "rejected")
 	needs := splitNeeds(s.goal)
@@ -176,9 +184,10 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 			}
 		}
 		if !repaired {
-			if field, value, reason := suggestFix(out, choices); field != "" {
-				_, _ = call("suggest_mandate_change", map[string]any{"field": field, "value": value, "reason": reason})
-				return fmt.Sprintf("The goal cannot be met within the mandate: %s. The smallest change that would unblock it: %s.", summarise(out), changeHint(field, value)), nil
+			if field, value, reason := suggestFix(out, choices, s.budget); field != "" {
+				if _, err := call("suggest_mandate_change", map[string]any{"field": field, "value": value, "reason": reason}); err == nil {
+					return fmt.Sprintf("The goal cannot be met within the mandate: %s.", summarise(out)), nil
+				}
 			}
 			return fmt.Sprintf("The goal cannot be met within the mandate: %s. Consider raising the budget or the per-item cap.", summarise(out)), nil
 		}
@@ -190,7 +199,7 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 		p := c.products[c.idx]
 		s.lastPick = append(s.lastPick, p.ID)
 		names = append(names, p.Title)
-		items = append(items, map[string]any{"product_id": p.ID, "quantity": 1, "reason": fmt.Sprintf("Best value for %q: rated %.1f at %.2f from %s", c.need, p.Rating, p.Price, p.Merchant)})
+		items = append(items, map[string]any{"product_id": p.ID, "quantity": 1, "reason": fmt.Sprintf("Best value for %q: rated %.1f, from %s", c.need, p.Rating, p.Merchant)})
 	}
 	summary := fmt.Sprintf("Proposed %s: %s. Each item was the best-rated option within the limits of the mandate.", Plural(len(items), "item"), strings.Join(names, "; "))
 	out, err := call("propose_cart", map[string]any{"items": items, "summary": summary})
@@ -335,9 +344,10 @@ func summarise(decisionJSON string) string {
 // suggestFix derives the smallest mandate change from the first violation,
 // the way the real agent is asked to: the cheapest candidate's price for a
 // cap or budget problem, its category or merchant for a rule problem.
-func suggestFix(decisionJSON string, choices []choice) (field string, value any, reason string) {
+func suggestFix(decisionJSON string, choices []choice, budget float64) (field string, value any, reason string) {
 	var d struct {
 		Total      float64 `json:"total"`
+		Remaining  float64 `json:"remaining_budget"`
 		Violations []struct {
 			Code      string `json:"code"`
 			ProductID string `json:"product_id"`
@@ -369,7 +379,12 @@ func suggestFix(decisionJSON string, choices []choice) (field string, value any,
 			if cheapest <= 0 {
 				cheapest = d.Total
 			}
-			return "total_budget", cheapest, fmt.Sprintf("the cheapest cart that meets the goal costs %.2f, more than the budget left", cheapest)
+			// The budget needed is what is already spent or reserved plus the cheapest cart.
+			need := cheapest
+			if budget > 0 {
+				need = mandate.Round(budget - d.Remaining + cheapest)
+			}
+			return "total_budget", need, fmt.Sprintf("the cheapest cart that meets the goal costs %.2f and only %.2f of the budget is left", cheapest, d.Remaining)
 		case "item_over_cap":
 			if p != nil {
 				return "max_per_item", p.Price, fmt.Sprintf("the cheapest matching item costs %.2f, above the per-item cap", p.Price)
@@ -483,25 +498,4 @@ func allowedNote(violation string) string {
 		return " and this mandate allows only " + m[1]
 	}
 	return ""
-}
-
-// changeHint says in words what a suggested mandate change would do.
-func changeHint(field string, value any) string {
-	switch field {
-	case "allowed_categories":
-		if v, ok := value.([]string); ok && len(v) > 0 {
-			return "allow the " + strings.Join(v, ", ") + " category"
-		}
-	case "blocked_merchants":
-		if v, ok := value.([]string); ok && len(v) > 0 {
-			return "unblock " + strings.Join(v, ", ")
-		}
-	case "max_per_item":
-		return fmt.Sprintf("raise the per-item cap to %.2f", value)
-	case "total_budget":
-		return fmt.Sprintf("raise the budget to %.2f", value)
-	case "min_rating":
-		return fmt.Sprintf("lower the minimum rating to %.1f", value)
-	}
-	return "amend the mandate"
 }

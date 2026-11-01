@@ -102,6 +102,66 @@ func TestFakeAgentGivesUpWhenImpossible(t *testing.T) {
 	}
 }
 
+// With money already spent, the budget the agent suggests must cover what is
+// spent plus the cheapest cart, not just the cart: a smaller number would
+// lower the budget and fail again.
+func TestFakeBudgetSuggestionCountsSpent(t *testing.T) {
+	md := mandate.Mandate{Name: "nearly spent", Currency: "USD", TotalBudget: 60, Spent: 50, AllowedCategories: []string{"computers"}}
+	sh, st, id := setup(t, md, "mechanical keyboard")
+	sh.Run(context.Background(), id)
+	m, _ := st.GetMission(id)
+	if m.Suggestion == nil || m.Suggestion.Field != "total_budget" {
+		t.Fatalf("expected a budget suggestion, got %+v", m.Suggestion)
+	}
+	if v, ok := m.Suggestion.Value.(float64); !ok || v <= 60 {
+		t.Fatalf("suggested budget %v must exceed the current 60 (50 already spent)", m.Suggestion.Value)
+	}
+}
+
+// A failure after the cart is already waiting keeps the cart usable.
+func TestFailKeepsAWaitingCart(t *testing.T) {
+	md := mandate.Mandate{Name: "x", Currency: "USD", TotalBudget: 500}
+	sh, st, id := setup(t, md, "mechanical keyboard")
+	_, _ = st.UpdateMission(id, func(m *store.Mission) { m.Status = store.MissionAwaitingApproval })
+	sh.fail(id, "agent stopped after 12 turns")
+	m, _ := st.GetMission(id)
+	if m.Status != store.MissionAwaitingApproval || m.Error == "" {
+		t.Fatalf("status %s, error %q", m.Status, m.Error)
+	}
+	_, _ = st.UpdateMission(id, func(m *store.Mission) { m.Status = store.MissionRunning })
+	sh.fail(id, "boom")
+	if m, _ := st.GetMission(id); m.Status != store.MissionFailed {
+		t.Fatalf("a running mission should fail, got %s", m.Status)
+	}
+}
+
+func TestMoneyAndPlural(t *testing.T) {
+	for in, want := range map[float64]string{0: "$0.00", 39: "$39.00", 1234.5: "$1,234.50", 1000000: "$1,000,000.00", 135.36: "$135.36", 0.1 + 0.2: "$0.30"} {
+		if got := Money(in, "USD"); got != want {
+			t.Errorf("Money(%v) = %q, want %q", in, got, want)
+		}
+	}
+	if Money(12, "GBP") != "£12.00" || Money(12, "CHF") != "12.00 CHF" {
+		t.Errorf("currencies: %q %q", Money(12, "GBP"), Money(12, "CHF"))
+	}
+	if Plural(1, "item") != "1 item" || Plural(3, "round") != "3 rounds" {
+		t.Error("plural")
+	}
+	if inSentence("A two-hour shoot") != "a two-hour shoot" || inSentence("USB-C hub") != "USB-C hub" {
+		t.Errorf("inSentence: %q %q", inSentence("A two-hour shoot"), inSentence("USB-C hub"))
+	}
+}
+
+// A deal sent back without a reason still tells the next buyer agent to aim lower.
+func TestBuyerPromptCarriesARejectionWithoutReason(t *testing.T) {
+	if p := buyerPrompt("logo", 100, "USD", "", 90); !strings.Contains(p, "without giving a reason") || !strings.Contains(p, "90.00") {
+		t.Fatalf("prompt lacks the rejection: %s", p)
+	}
+	if p := buyerPrompt("logo", 100, "USD", "", 0); strings.Contains(p, "rejected") {
+		t.Fatal("a first run must not mention a rejection")
+	}
+}
+
 func TestAmendMandate(t *testing.T) {
 	md := mandate.Mandate{Name: "x", Currency: "USD", TotalBudget: 100, MaxPerItem: 50, AllowedCategories: []string{"computers"}, BlockedMerchants: []string{"BudgetBytes"}, Spent: 30}
 	out, desc, err := md.Amend("max_per_item", 80.0)

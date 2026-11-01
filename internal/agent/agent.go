@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -199,7 +200,11 @@ func (s *Shopper) converse(ctx context.Context, missionID string, sess Session, 
 
 func (s *Shopper) fail(missionID, msg string) {
 	_, _ = s.Store.UpdateMission(missionID, func(m *store.Mission) {
-		m.Status = store.MissionFailed
+		// A mission that already has a cart waiting, an order open or a
+		// payment keeps that state: the error is recorded, the cart stays usable.
+		if m.Status == store.MissionRunning || m.Status == "" {
+			m.Status = store.MissionFailed
+		}
 		m.Error = msg
 	})
 	s.Store.AddEvent(missionID, "error", msg, nil)
@@ -603,4 +608,36 @@ func Plural(n int, noun string) string {
 		return fmt.Sprintf("1 %s", noun)
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// Money writes an amount for people: $1,234.50, £12.00, or 12.00 CHF.
+func Money(v float64, cur string) string {
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	cents := int64(v*100 + 0.5)
+	whole, frac := cents/100, cents%100
+	digits := strconv.FormatInt(whole, 10)
+	var b strings.Builder
+	for i, c := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	num := fmt.Sprintf("%s.%02d", b.String(), frac)
+	sign := ""
+	if neg {
+		sign = "-"
+	}
+	switch strings.ToUpper(cur) {
+	case "USD", "":
+		return sign + "$" + num
+	case "EUR":
+		return sign + "€" + num
+	case "GBP":
+		return sign + "£" + num
+	}
+	return sign + num + " " + strings.ToUpper(cur)
 }

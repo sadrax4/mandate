@@ -310,6 +310,49 @@ func TestRejectWithoutReasonAndListAmounts(t *testing.T) {
 	}
 }
 
+// The approval is part of the mission's story, and a cart waiting for
+// approval is re-checked against the mandate as it is now.
+func TestApprovalEventAndLiveDecision(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Audio", "total_budget": 400, "allowed_categories": []string{"audio"}}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "noise cancelling headphones"}, &ms)
+	mid := ms["id"].(string)
+	out := e.waitMission(mid, store.MissionAwaitingApproval)
+	pid := out["proposals"].([]any)[0].(map[string]any)["id"].(string)
+	live, _ := out["live_decisions"].(map[string]any)
+	if d, ok := live[pid].(map[string]any); !ok || d["allowed"] != true {
+		t.Fatalf("live decision for the pending cart = %v", out["live_decisions"])
+	}
+	var list []map[string]any
+	e.get("/api/missions", &list)
+	if list[0]["fits"] != true {
+		t.Fatalf("row should say the cart fits: %v", list[0])
+	}
+	var ap map[string]any
+	if code := e.post("/api/proposals/"+pid+"/approve", nil, &ap); code != 200 {
+		t.Fatalf("approve: %d %v", code, ap)
+	}
+	var d map[string]any
+	e.get("/api/missions/"+mid, &d)
+	found := false
+	for _, ev := range d["events"].([]any) {
+		m := ev.(map[string]any)
+		if m["type"] == "approved" {
+			found = m["data"].(map[string]any)["by"] == "human"
+		}
+	}
+	if !found {
+		t.Fatal("no approved event credited to the human")
+	}
+	var after []map[string]any
+	e.get("/api/missions", &after)
+	if after[0]["payment_status"] == "" || after[0]["payment_status"] == nil || after[0]["fits"] != nil {
+		t.Fatalf("row after approval = %v", after[0])
+	}
+}
+
 func TestAutoApproveGoesStraightToPayPal(t *testing.T) {
 	e := newEnv(t)
 	var md map[string]any

@@ -2,8 +2,8 @@
 // Run the server as for scripts/smoke.cjs, then:
 //   BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke-vault.cjs
 const { chromium } = require('playwright'); (async () => {
-// Full-page shots start at the top, so the sticky header is not painted mid-page.
-const shoot = async (p, path) => { await p.evaluate(() => window.scrollTo(0, 0)); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
+// Full-page shots start at the top (the sticky header is not painted mid-page) and lay sticky rows out in place.
+const shoot = async (p, path) => { await p.evaluate(() => { document.documentElement.dataset.capture = '1'; window.scrollTo(0, 0) }); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
 const base = process.env.BASE_URL || 'http://localhost:8080'
 const S = process.env.SHOTS || 'docs/screenshots'
 const browser = await chromium.launch()

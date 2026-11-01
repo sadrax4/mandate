@@ -48,6 +48,10 @@ export type Mission = {
   proposal_currency?: string
   proposal_items?: number
   proposal_first?: string
+  /** In mission lists only: does the cart waiting for approval still fit the mandate today? */
+  fits?: boolean
+  /** In mission lists only: PayPal status of the current order. */
+  payment_status?: string
 }
 
 export type CartItem = {
@@ -142,6 +146,8 @@ export type MissionDetail = {
   proposals: Proposal[] | null
   payments: Payment[] | null
   events: Event[] | null
+  /** Carts still waiting for approval, checked against the mandate as it is now. */
+  live_decisions?: Record<string, Decision>
 }
 
 export type Config = {

@@ -81,20 +81,31 @@ export function Statline({ items, compact }: { items: { value: ReactNode; label:
   )
 }
 
-export type TrackerStep = { key: string; label: string; state: 'done' | 'current' | 'future' | 'failed' | 'revised'; note?: string }
+export type TrackerStep = {
+  key: string
+  label: string
+  state: 'done' | 'current' | 'future' | 'failed' | 'revised'
+  note?: string
+  /** Decoration before the label (a step number); screen readers skip it. */
+  marker?: string
+  /** The current step is waiting on the human, not on the agent: drawn in the "your turn" colour. */
+  yours?: boolean
+}
 
-const STEP_WORD: Record<TrackerStep['state'], string> = { done: 'done', current: 'current step', future: '', failed: 'stopped here', revised: 'revised' }
+// aria-current already says "current step"; the words fill in the other states.
+const STEP_WORD: Record<TrackerStep['state'], string> = { done: 'done', current: '', future: '', failed: 'stopped here', revised: 'revised' }
 
 /** Steps of a story as dots on a line: done, current (pulsing), future, failed, revised. */
 export function Tracker({ steps, size, label: name }: { steps: TrackerStep[]; size?: 'sm' | 'full'; label?: string }) {
   return (
     <ol className={`tracker${size ? ' ' + size : ''}`} role="list" aria-label={name ?? 'Progress'}>
       {steps.map((s) => (
-        <li key={s.key} className={`step ${s.state}`} aria-current={s.state === 'current' ? 'step' : undefined}>
+        <li key={s.key} className={`step ${s.state}${s.yours ? ' yours' : ''}`} aria-current={s.state === 'current' ? 'step' : undefined}>
           <span className="dot" aria-hidden="true" />
+          {s.marker && <span className="marker" aria-hidden="true">{s.marker}</span>}
           {s.label}
           {STEP_WORD[s.state] && <span className="sr-only">, {STEP_WORD[s.state]}</span>}
-          {s.note && <span className="note">{s.note}</span>}
+          {s.note && <span className="note"><span className="sr-only">, </span>{s.note}</span>}
         </li>
       ))}
     </ol>

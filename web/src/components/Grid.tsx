@@ -27,6 +27,11 @@ export function useMediaQuery(query: string) {
 
 /** Cell class for numbers: tabular figures. */
 export const NUM = 'num'
+/**
+ * A right-aligned number column. A colDef's own cellClass replaces the one the
+ * 'rightAligned' type brings, so the alignment class has to be repeated here.
+ */
+export const MONEY: { type: 'rightAligned'; cellClass: string[] } = { type: 'rightAligned', cellClass: [NUM, 'ag-right-aligned-cell'] }
 
 export function usePrefersDark() {
   const [isDark, setDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
@@ -47,6 +52,8 @@ export function useChartTokens() {
     const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback
     return {
       isDark,
+      text: v('--text', '#15181d'),
+      surface: v('--surface', '#ffffff'),
       accent: v('--accent', '#0f766e'),
       live: v('--live', '#1d4ed8'),
       warn: v('--warn', '#b45309'),
@@ -58,6 +65,22 @@ export function useChartTokens() {
       extra: isDark ? ['#c4b5fd', '#f9a8d4', '#6ee7b7', '#94a3b8', '#fdba74'] : ['#7c3aed', '#db2777', '#059669', '#64748b', '#ea580c'],
     }
   }, [isDark])
+}
+
+/** AG Charts theme that takes its text, axis and grid-line colours from the page tokens. */
+export function chartTheme(t: ReturnType<typeof useChartTokens>) {
+  return {
+    baseTheme: (t.isDark ? 'ag-default-dark' : 'ag-default') as 'ag-default-dark' | 'ag-default',
+    params: {
+      fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+      textColor: t.text,
+      subtleTextColor: t.muted,
+      axisLineColor: t.line,
+      gridLineColor: t.line,
+      tooltipBackgroundColor: t.surface,
+      tooltipTextColor: t.text,
+    },
+  }
 }
 
 export const defaultColDef: ColDef = { sortable: true, filter: true, resizable: true, flex: 1, minWidth: 90 }
@@ -78,7 +101,8 @@ export function Grid<T>(props: AgGridReactProps<T> & { height?: number | string;
         defaultColDef={compact ? compactColDef : defaultColDef}
         domLayout={height ? 'normal' : 'autoHeight'}
         animateRows
-        suppressCellFocus={!onRowOpen}
+        // Cells take keyboard focus (truncated values can be read and links reached); only the tiny cart grid skips it.
+        suppressCellFocus={compact}
         rowClass={onRowOpen ? 'row-link' : undefined}
         onRowClicked={onRowOpen ? (e) => e.data && onRowOpen(e.data) : undefined}
         onCellKeyDown={

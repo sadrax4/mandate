@@ -3,8 +3,8 @@
 // then: BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke.cjs
 // Requires: npm i -g playwright && npx playwright install chromium
 const { chromium } = require('playwright'); (async () => {
-// Full-page shots start at the top, so the sticky header is not painted mid-page.
-const shoot = async (p, path) => { await p.evaluate(() => window.scrollTo(0, 0)); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
+// Full-page shots start at the top (the sticky header is not painted mid-page) and lay sticky rows out in place.
+const shoot = async (p, path) => { await p.evaluate(() => { document.documentElement.dataset.capture = '1'; window.scrollTo(0, 0) }); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
 const base = process.env.BASE_URL || 'http://localhost:8080'
 const S = process.env.SHOTS || 'docs/screenshots'
 const browser = await chromium.launch()
@@ -91,7 +91,7 @@ const svc = await (await page.request.post(base + '/api/mandates', { data: { nam
 const nm = await (await page.request.post(base + '/api/missions', { data: { mandate_id: svc.id, goal: 'a two-hour product photo shoot for 20 items', kind: 'negotiate' } })).json()
 await page.goto(base + '/#/missions/' + nm.id)
 await page.waitForSelector('text=Agent-to-agent negotiation', { timeout: 20000 })
-await page.waitForSelector('text=deal at', { timeout: 20000 })
+await page.waitForSelector('text=below asking', { timeout: 20000 })
 await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
 await page.waitForTimeout(1200)
 await shoot(page, `${S}/13-negotiation.png`)

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, GridApi } from 'ag-grid-community'
 import { api, isFinalPayment, label, money, statusCellClass, type AskResult, type LedgerRow } from '../api'
 import { useConfig } from '../config'
-import { Grid, NUM, useMediaQuery } from '../components/Grid'
+import { Grid, MONEY, NUM, useMediaQuery } from '../components/Grid'
 import { Markdown } from '../components/Markdown'
 import { Card, Chip, Empty, Statline, SuggestionChip, navigate } from '../components/ui'
 import { shortStamp } from '../format'
@@ -13,7 +13,8 @@ function OrderCell(p: { data?: LedgerRow }) {
   return (
     <div className="cart-item">
       <div className="cart-title clamp2">{p.data.goal}</div>
-      <div className="cart-reason">{shortStamp(p.data.created_at)} · <span className={statusCellClass(p.data.status)}>{label(p.data.status)}</span></div>
+      <div className="cart-reason">{shortStamp(p.data.created_at)}</div>
+      <div className={`cart-reason ${statusCellClass(p.data.status)}`}>{label(p.data.status)}</div>
     </div>
   )
 }
@@ -80,13 +81,13 @@ export default function Ledger() {
       { colId: 'order', headerName: 'Order', field: 'goal', cellRenderer: OrderCell, autoHeight: true, wrapText: true, minWidth: 150, flex: 1, hide: !phone },
       { field: 'created_at', headerName: 'When', valueFormatter: (p) => shortStamp(p.value), tooltipValueGetter: (p) => new Date(p.value).toLocaleString(), width: 150, flex: 0, sort: 'desc', hide: phone },
       { field: 'mandate_name', headerName: 'Mandate', minWidth: 120, hide: phone },
-      { field: 'goal', headerName: 'Mission goal', minWidth: 200, flex: 2, tooltipField: 'goal', hide: phone },
+      { field: 'goal', headerName: 'Mission goal', minWidth: 200, flex: 2, tooltipField: 'goal', wrapText: true, autoHeight: true, cellClass: 'cell-wrap2', hide: phone },
       { field: 'items', headerName: 'Items', minWidth: 76, maxWidth: 84, filter: 'agNumberColumnFilter', suppressHeaderFilterButton: true, cellClass: NUM, hide: phone },
-      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: phone ? 92 : 105, maxWidth: phone ? 110 : undefined, cellClass: NUM },
+      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', ...MONEY, minWidth: phone ? 92 : 120, maxWidth: phone ? 110 : undefined },
       { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 170, hide: phone },
       // A value getter (not a formatter) so AG Grid never shows the boolean as a checkbox, and filters and CSV read words.
       { colId: 'vaulted', headerName: 'Paid via', cellDataType: 'text', valueGetter: (p) => (p.data?.vaulted ? 'saved PayPal' : 'PayPal checkout'), cellClass: (p) => (p.value === 'saved PayPal' ? 'cell-via-saved' : ''), minWidth: 145, hide: phone },
-      { field: 'id', headerName: 'PayPal order', width: 180, flex: 0, tooltipField: 'id', hide: phone },
+      { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id', hide: phone },
       { field: 'capture_id', headerName: 'Capture', width: 160, flex: 0, tooltipField: 'capture_id', hide: true },
       { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: true },
       { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: true },
@@ -110,7 +111,7 @@ export default function Ledger() {
           { value: money(totals.open, config?.currency), label: totals.openCount === 1 ? 'open order, not yet captured' : 'open orders, not yet captured' },
         ]}
       />
-      {err && <div className="alert bad">{err}</div>}
+      {err && <div className="alert bad" role="alert">{err}</div>}
       <Card
         title="Orders"
         action={
@@ -119,7 +120,14 @@ export default function Ledger() {
               <label className="check hide-phone" style={{ fontSize: 13 }}>
                 <input type="checkbox" checked={details} onChange={(e) => setDetails(e.target.checked)} /> More columns
               </label>
-              <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-ledger.csv', allColumns: true })}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  // Every column, hidden ones included, except the phone-only summary column.
+                  const g = gridApi.current
+                  g?.exportDataAsCsv({ fileName: 'mandate-ledger.csv', columnKeys: g.getColumns()?.filter((c) => c.getColId() !== 'order') })
+                }}
+              >
                 Export CSV
               </button>
             </div>
@@ -156,7 +164,10 @@ export default function Ledger() {
             <span className="try-label">Try:</span>
             {ASK_EXAMPLES.map((q) => <SuggestionChip key={q} text={q} onClick={() => setQuestion(q)} />)}
           </div>
-          {askErr && <div className="alert bad">{askErr}</div>}
+          {askErr && <div className="alert bad" role="alert">{askErr}</div>}
+          {/* stays mounted, so the answer is read out when it arrives */}
+          <div aria-live="polite" aria-busy={asking}>
+          {asking && <p className="sr-only">Asking PayPal…</p>}
           {answer && (
             <div className="mt">
               <div className="summary md"><Markdown text={answer.answer} /></div>
@@ -173,6 +184,7 @@ export default function Ledger() {
               {answer.warning && <div className="alert warn">{answer.warning}</div>}
             </div>
           )}
+          </div>
         </Card>
       )}
     </div>

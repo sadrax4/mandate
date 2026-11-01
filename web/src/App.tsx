@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type Config } from './api'
 import Dashboard from './pages/Dashboard'
 import MandateForm from './pages/MandateForm'
@@ -40,6 +40,18 @@ export default function App() {
   useEffect(() => {
     api.config().then(setConfig).catch(() => setConfig(null))
   }, [])
+  // On a route change (not the first load): name the page and move focus to it, so keyboard and screen-reader users land on the new view.
+  const firstRoute = useRef(true)
+  useEffect(() => {
+    const name = path === '/ledger' ? 'Ledger' : path === '/insights' ? 'Insights' : path === '/mandates/new' ? 'New mandate' : path.startsWith('/missions/') ? 'Mission' : 'Mandates'
+    document.title = `${name} · Mandate`
+    if (firstRoute.current) {
+      firstRoute.current = false
+      return
+    }
+    window.scrollTo(0, 0)
+    document.getElementById('main')?.focus({ preventScroll: true })
+  }, [path])
 
   let page
   if (path === '/mandates/new') page = <MandateForm />
@@ -59,13 +71,13 @@ export default function App() {
             <span>Mandate</span>
           </a>
           <nav aria-label="Main">
-            <a className={mandatesActive} href="#/">Mandates</a>
-            <a className={active('/ledger')} href="#/ledger">Ledger</a>
-            <a className={active('/insights')} href="#/insights">Insights</a>
+            <a className={mandatesActive} aria-current={mandatesActive ? 'page' : undefined} href="#/">Mandates</a>
+            <a className={active('/ledger')} aria-current={active('/ledger') ? 'page' : undefined} href="#/ledger">Ledger</a>
+            <a className={active('/insights')} aria-current={active('/insights') ? 'page' : undefined} href="#/insights">Insights</a>
           </nav>
           {config && <ModePill config={config} />}
         </header>
-        <main>{page}</main>
+        <main id="main" tabIndex={-1}>{page}</main>
         <footer>
           {config && <div className="footer-mode"><ModePill config={config} /></div>}
           Built for the PayPal AI Hackathon · the agent proposes, only you and PayPal move money.

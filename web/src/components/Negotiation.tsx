@@ -3,12 +3,13 @@ import { AgCharts } from 'ag-charts-react'
 import type { AgCartesianChartOptions } from 'ag-charts-community'
 import { money, type Negotiation } from '../api'
 import { Chip } from './ui'
-import { useChartTokens } from './Grid'
+import { chartTheme, useChartTokens } from './Grid'
 
-/** The outcome chip shown next to the negotiation heading. */
-export function negotiationChip(n: Negotiation, currency: string, running: boolean) {
+/** The outcome chip shown next to the negotiation heading; `short` leaves out the price when the heading already shows it. */
+export function negotiationChip(n: Negotiation, currency: string, running: boolean, short = false) {
   const saved = n.agreed_price ? n.list_price - n.agreed_price : 0
-  if (n.outcome === 'agreed') return <Chip tone="good">deal at {money(n.agreed_price ?? 0, currency)} · {Math.round((100 * saved) / n.list_price)}% below asking</Chip>
+  const pct = `${Math.round((100 * saved) / n.list_price)}% below asking`
+  if (n.outcome === 'agreed') return <Chip tone="good">{short ? `negotiated · ${pct}` : `deal at ${money(n.agreed_price ?? 0, currency)} · ${pct}`}</Chip>
   if (n.outcome) return <Chip>no deal</Chip>
   return <Chip>{running ? 'negotiating…' : 'open'}</Chip>
 }
@@ -46,8 +47,12 @@ export function NegotiationBlock({ negotiation: n, currency, running }: { negoti
     const lo = Math.min(n.limit, ...prices)
     const hi = Math.max(n.list_price, ...prices)
     const step = niceStep(hi - lo)
+    const yMin = Math.floor(lo / step) * step - step / 2
+    // The limit's label goes on the side of the line with more room before the next grid line.
+    const frac = ((((n.limit - yMin) % step) + step) % step) / step
+    const labelPos = frac < 0.5 ? 'top-left' : 'bottom-left'
     return {
-      theme: t.isDark ? 'ag-default-dark' : 'ag-default',
+      theme: chartTheme(t),
       background: { fill: 'transparent' },
       padding: { top: 8, right: 12, bottom: 0, left: 4 },
       height: 180,
@@ -60,11 +65,11 @@ export function NegotiationBlock({ negotiation: n, currency, running }: { negoti
         x: { type: 'category' },
         y: {
           type: 'number',
-          min: Math.floor(lo / step) * step - step / 2,
+          min: yMin,
           max: Math.ceil(hi / step) * step,
           interval: { step },
           label: { formatter: (p: any) => money(p.value, currency) },
-          crossLines: [{ type: 'line', value: n.limit, stroke: t.warn, lineDash: [6, 4], label: { text: `your limit ${money(n.limit, currency)}`, position: 'bottom-left', fontSize: 11, color: t.warn } }],
+          crossLines: [{ type: 'line', value: n.limit, stroke: t.warn, lineDash: [6, 4], label: { text: `limit ${money(n.limit, currency)}`, position: labelPos, fontSize: 11, color: t.warn } }],
         },
       },
       legend: { position: 'bottom', item: { marker: { size: 8 } } },

@@ -661,12 +661,23 @@ func (s *Server) handleGetMission(w http.ResponseWriter, r *http.Request) {
 			payments = append(payments, p)
 		}
 	}
+	proposals := s.st.ListProposals(m.ID)
+	live := map[string]mandate.Decision{}
+	if md != nil {
+		for _, p := range proposals {
+			if p.Status == store.ProposalPending {
+				live[p.ID] = md.Evaluate(p.Cart)
+			}
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"mission":   m,
 		"mandate":   mandateView(md),
-		"proposals": s.st.ListProposals(m.ID),
+		"proposals": proposals,
 		"payments":  payments,
 		"events":    s.st.ListEvents(m.ID, 0),
+		// For carts still waiting on the human: the check against the mandate as it is now.
+		"live_decisions": live,
 	})
 }
 
@@ -938,6 +949,11 @@ func (s *Server) createPayment(ctx context.Context, proposalID string) (*store.P
 		m.Status = store.MissionAwaitingPayment
 		m.OrderID = order.ID
 	})
+	by := "human"
+	if p.Status == store.ProposalAutoApproved {
+		by = "threshold"
+	}
+	s.st.AddEvent(p.MissionID, "approved", fmt.Sprintf("cart approved (%s): %s, %s", by, agent.Plural(len(p.Cart.Items), "item"), agent.Money(d.Total, md.Currency)), map[string]any{"proposal_id": p.ID, "total": d.Total, "items": len(p.Cart.Items), "vaulted": vaulted, "by": by})
 	if !vaulted {
 		s.st.AddEvent(p.MissionID, "payment", fmt.Sprintf("PayPal order %s created for %.2f %s (%s); waiting for the buyer to approve in PayPal", order.ID, d.Total, md.Currency, s.pp.Mode()), map[string]any{"order_id": order.ID, "approve_url": order.ApproveURL, "status": order.Status})
 		return pay, nil
@@ -1989,11 +2005,16 @@ type missionRow struct {
 	ProposalCurrency string  `json:"proposal_currency,omitempty"`
 	ProposalItems    int     `json:"proposal_items,omitempty"`
 	ProposalFirst    string  `json:"proposal_first,omitempty"`
+	// Fits is set for a cart waiting on the human: does it still pass the mandate today?
+	Fits *bool `json:"fits,omitempty"`
+	// PaymentStatus is the PayPal status of the mission's current order.
+	PaymentStatus string `json:"payment_status,omitempty"`
 }
 
 func (s *Server) missionRows(mandateID string) []missionRow {
 	ms := s.st.ListMissions(mandateID)
 	out := make([]missionRow, 0, len(ms))
+	mandates := map[string]*mandate.Mandate{}
 	for _, m := range ms {
 		row := missionRow{Mission: m}
 		if m.ProposalID != "" {
@@ -2002,6 +2023,22 @@ func (s *Server) missionRows(mandateID string) []missionRow {
 				row.ProposalCurrency = p.Decision.Currency
 				row.ProposalItems = len(p.Cart.Items)
 				row.ProposalFirst = p.Cart.Items[0].Title
+				if p.Status == store.ProposalPending {
+					md, ok := mandates[p.MandateID]
+					if !ok {
+						md, _ = s.st.GetMandate(p.MandateID)
+						mandates[p.MandateID] = md
+					}
+					if md != nil {
+						fits := md.Evaluate(p.Cart).Allowed
+						row.Fits = &fits
+					}
+				}
+			}
+		}
+		if m.OrderID != "" {
+			if pay, err := s.st.GetPayment(m.OrderID); err == nil {
+				row.PaymentStatus = pay.Status
 			}
 		}
 		out = append(out, row)

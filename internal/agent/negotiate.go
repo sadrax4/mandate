@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"mandate/internal/mandate"
 	"mandate/internal/store"
@@ -81,11 +82,18 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 		x.Kind = "negotiate"
 		x.Negotiation = neg
 	})
-	s.Store.AddEvent(missionID, "status", fmt.Sprintf("negotiation started: buyer agent (hard limit %.2f %s from the mandate) vs seller agent asking %.2f", limit, md.Currency, list), map[string]any{"limit": limit, "list_price": list})
+	s.Store.AddEvent(missionID, "status", fmt.Sprintf("negotiation started: buyer agent (hard limit %s from the mandate) vs seller agent asking %s", Money(limit, md.Currency), Money(list, md.Currency)), map[string]any{"limit": limit, "list_price": list})
 
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()
-	buyer := s.Provider.NewSession(buyerPrompt(service, limit, md.Currency, feedback))
+	// A rejection without a reason still has to reach the buyer agent.
+	rejected := 0.0
+	for _, p := range s.Store.ListProposals(missionID) {
+		if p.Status == store.ProposalRejected {
+			rejected = p.Decision.Total
+		}
+	}
+	buyer := s.Provider.NewSession(buyerPrompt(service, limit, md.Currency, feedback, rejected))
 	seller := s.Provider.NewSession(sellerPrompt(service, list, floor, md.Currency))
 
 	type move struct {
@@ -101,7 +109,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 		label := map[string]string{"offer": "offers", "counter": "counters at", "accept": "accepts", "decline": "declines", "walk_away": "walks away"}[mv.kind]
 		msg := fmt.Sprintf("%s agent %s", party, label)
 		if mv.price > 0 && (mv.kind == "offer" || mv.kind == "counter" || mv.kind == "accept") {
-			msg += fmt.Sprintf(" %.2f %s", mv.price, md.Currency)
+			msg += " " + Money(mv.price, md.Currency)
 		}
 		if r.Message != "" {
 			msg += ": " + r.Message
@@ -150,7 +158,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 
 	// The seller opens at list price.
 	sellerPrice := list
-	record("seller", move{kind: "counter", price: list, message: fmt.Sprintf("I can do %s for %.2f %s.", service, list, md.Currency)}, 0)
+	record("seller", move{kind: "counter", price: list, message: fmt.Sprintf("I can do %s for %s.", inSentence(service), Money(list, md.Currency))}, 0)
 	buyerPrice := 0.0
 	outcome, agreed := "no_deal", 0.0
 	for round := 1; round <= negotiationMaxRounds && outcome == "no_deal"; round++ {
@@ -164,7 +172,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 		switch mv.kind {
 		case "accept":
 			if sellerPrice > limit { // the model may not accept above the mandate; treat as a limit offer
-				mv = move{kind: "offer", price: limit, message: "I can go to my limit, " + fmt.Sprintf("%.2f", limit) + ", not above."}
+				mv = move{kind: "offer", price: limit, message: "I can go to " + Money(limit, md.Currency) + ", not above."}
 			} else {
 				mv.price = sellerPrice
 				record("buyer", mv, round)
@@ -220,7 +228,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 
 	neg.Outcome = outcome
 	if outcome != "agreed" {
-		summary := fmt.Sprintf("No deal: after %s the seller's lowest price was %.2f %s against a mandate limit of %.2f %s.", Plural(roundsOf(neg), "round"), sellerPrice, md.Currency, limit, md.Currency)
+		summary := fmt.Sprintf("No deal: after %s the seller's lowest price was %s, above your agent's limit of %s.", Plural(roundsOf(neg), "round"), Money(sellerPrice, md.Currency), Money(limit, md.Currency))
 		if outcome == "walked_away" || outcome == "declined" {
 			summary = fmt.Sprintf("No deal: the %s ended the negotiation (%s).", map[string]string{"walked_away": "buyer agent", "declined": "seller agent"}[outcome], lastMessage(neg, ""))
 		}
@@ -230,9 +238,9 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 			x.Status = store.MissionNoProposal
 		})
 		if sellerPrice > limit {
-			sug := &store.Suggestion{Field: "max_per_item", Value: sellerPrice, Reason: fmt.Sprintf("the seller would not go below %.2f; the mandate allows %.2f per item", sellerPrice, limit)}
+			sug := &store.Suggestion{Field: "max_per_item", Value: sellerPrice, Reason: fmt.Sprintf("the seller would not go below %s; the mandate allows %s per item", Money(sellerPrice, md.Currency), Money(limit, md.Currency))}
 			if md.MaxPerItem == 0 || md.MaxPerItem >= sellerPrice {
-				sug = &store.Suggestion{Field: "total_budget", Value: mandate.Round(md.Spent + md.Reserved + sellerPrice), Reason: fmt.Sprintf("the seller would not go below %.2f; only %.2f of the budget is left", sellerPrice, md.Remaining())}
+				sug = &store.Suggestion{Field: "total_budget", Value: mandate.Round(md.Spent + md.Reserved + sellerPrice), Reason: fmt.Sprintf("the seller would not go below %s; only %s of the budget is left", Money(sellerPrice, md.Currency), Money(md.Remaining(), md.Currency))}
 			}
 			_, _ = s.Store.UpdateMission(missionID, func(x *store.Mission) { x.Suggestion = sug })
 			s.Store.AddEvent(missionID, "suggestion", "agent suggests a mandate change: "+sug.Reason, map[string]any{"field": sug.Field, "value": sug.Value})
@@ -246,9 +254,9 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 	cart := mandate.Cart{Currency: md.Currency, Items: []mandate.CartItem{{
 		ProductID: "svc_" + missionID, Title: service + " (negotiated)", Merchant: neg.Seller, Category: "services",
 		UnitPrice: agreed, Currency: md.Currency, Quantity: 1,
-		Reason: fmt.Sprintf("Negotiated from %.2f down to %.2f over %s, inside the mandate limit of %.2f", list, agreed, Plural(roundsOf(neg), "round"), limit),
+		Reason: fmt.Sprintf("Negotiated from %s down to %s over %s, inside your agent's limit of %s", Money(list, md.Currency), Money(agreed, md.Currency), Plural(roundsOf(neg), "round"), Money(limit, md.Currency)),
 	}}}
-	summary := fmt.Sprintf("Deal reached at %.2f %s for %s (the seller asked %.2f; %.2f saved, %.0f%% below asking). The human still decides; nothing is paid until approval.", agreed, md.Currency, service, list, saved, 100*saved/list)
+	summary := fmt.Sprintf("Deal reached at %s for %s: the seller asked %s, so %s saved (%.0f%% below asking). You still decide; nothing is paid until you approve.", Money(agreed, md.Currency), inSentence(service), Money(list, md.Currency), Money(saved, md.Currency), 100*saved/list)
 	out, p := s.createProposal(ctx, missionID, md, cart, summary)
 	if p.Status == store.ProposalRejectedByPolicy {
 		// Typically the mandate does not allow the "services" category.
@@ -261,7 +269,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 			}
 		}
 		_, _ = s.Store.UpdateMission(missionID, func(x *store.Mission) {
-			x.Summary = "Deal reached at " + fmt.Sprintf("%.2f %s", agreed, md.Currency) + " but the mandate blocked it: " + checkMessage(p.Decision)
+			x.Summary = "Deal reached at " + Money(agreed, md.Currency) + " but the mandate blocked it: " + checkMessage(p.Decision)
 			if x.Status == store.MissionRunning {
 				x.Status = store.MissionNoProposal
 			}
@@ -282,10 +290,13 @@ func lastMessage(n *store.Negotiation, party string) string {
 	return ""
 }
 
-func buyerPrompt(service string, limit float64, cur, feedback string) string {
+func buyerPrompt(service string, limit float64, cur, feedback string, rejected float64) string {
 	fb := ""
-	if feedback != "" {
+	switch {
+	case feedback != "":
 		fb = fmt.Sprintf("\n\nThe human rejected a previous deal with this feedback: %q. Take it into account (usually: aim lower, or walk away sooner).", feedback)
+	case rejected > 0:
+		fb = fmt.Sprintf("\n\nThe human rejected the previous deal (at %.2f %s) without giving a reason. Aim clearly lower than that, or walk away sooner.", rejected, cur)
 	}
 	return fmt.Sprintf(`%s
 You are Mandate's buyer agent, negotiating on behalf of a human who wants: %s.
@@ -309,4 +320,14 @@ func roundsOf(neg *store.Negotiation) int {
 		return 0
 	}
 	return neg.Rounds[len(neg.Rounds)-1].Round + 1
+}
+
+// inSentence lower-cases a goal's first letter so it reads inside a sentence
+// ("a two-hour shoot"), unless it starts with an acronym or a number.
+func inSentence(s string) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > 1 && unicode.IsUpper(r[0]) && !unicode.IsUpper(r[1]) {
+		r[0] = unicode.ToLower(r[0])
+	}
+	return string(r)
 }

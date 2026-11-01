@@ -1,25 +1,38 @@
-# Demo video script (target 2:40, hard limit 3:00)
+# Demo video (2:52, English captions, no narration, no music)
 
-Record on the live server (http://23.27.20.150:8080) so the status at the top right reads `PayPal sandbox · Claude · Channel3 · PayPal MCP`. Say (or caption) the words "PayPal" and "Claude" explicitly: judges look for both. Keep retailer logos and product photos out of frame (third-party trademark rule); product names in a grid are fine. 1920×1080, browser zoomed to 110%, no music. Narrate calmly; the product does the talking. Open the PayPal sandbox buyer login in a second tab beforehand so the login step takes seconds.
+Recorded live on http://23.27.20.150:8080 (PayPal sandbox, Claude, Channel3 catalog) by `scripts/video`:
+a real browser at 1920×1080 with a visible cursor, human-paced typing, burned-in captions and an `.srt`
+with the same text. Waits on the agent are sped up and captioned "(sped up)". Nothing is faked: the
+PayPal sandbox login, the capture and the receipt IDs on screen are real sandbox objects (no real money).
 
-| Time | Screen | Say |
+| Time | Scene | What happens |
 |---|---|---|
-| 0:00–0:15 | Dashboard | "Mandate is an AI shopping agent that can only spend inside the limits you give it, and pays with PayPal. AI agents can shop for you, but nobody wants to hand an AI their wallet; this is the middle ground." |
-| 0:15–0:35 | New mandate form, fill it in | "A mandate is a budget, a per-item cap, allowed categories, blocked merchants, a minimum rating, and whether I approve every cart. I also let it save my PayPal account at the first checkout." Save. |
-| 0:35–1:15 | Type the goal in the box on the dashboard, Start mission, watch the mission page | "I give it a goal in plain language." Type *a mechanical keyboard with brown switches under $120*. "Claude searches real products through Channel3, compares them, and runs every cart through the policy engine. The tracker at the top shows where it is; everything it looked at lands in this grid, and every product links to the merchant." Pause on the green checks and the agent's reasons for rejecting alternatives. |
-| 1:15–1:30 | Decision card ("The agent proposes") | "Here is the proposal: the item, the agent's reason, the total, what is left of the budget, and which rules passed. The agent cannot pay. I can." |
-| 1:30–1:55 | Click Approve → PayPal sandbox checkout → return | "Approval creates a PayPal order for this exact cart and reserves the budget. I pay on PayPal as the buyer. Back in Mandate the order is captured, with the capture ID, and the budget updates. PayPal also saved my account to this mandate: the mandate card now says PayPal saved." |
-| 1:55–2:10 | Second mission on the same mandate (prepared earlier), click Approve | "This cart is paid with one click and no checkout, and anything under the auto-approve threshold pays with no click at all. The mandate still decides every cent." |
-| 2:10–2:25 | Mission with a goal outside the mandate (prepared earlier) | "If a goal cannot fit, the agent explains why and suggests the smallest change. It cannot change its own mandate; I click Allow kitchen and retry." Click it, show the retry starting. |
-| 2:25–2:40 | Negotiation mission (prepared earlier), then Insights | "Two agents can even negotiate: my buyer agent haggles for a service under my limit, the seller concedes, and I approve the deal. Insights shows where the money went." |
-| 2:40–2:50 | Ledger, then the Ask panel | "Every order and capture is in the ledger, and the assistant can check them against PayPal itself through PayPal's MCP server, read-only." |
-| 2:50–3:00 | Closing | "Mandate: delegate the shopping, keep the authority. Sandbox only today, open source, built on PayPal Orders, vault and MCP, Claude, AG Grid and Channel3." |
+| 0:00 | Title card | "Give an AI agent a budget. Keep the final say." |
+| 0:04 | Intro | The live app and its status pill (PayPal sandbox, Claude, Channel3) |
+| 0:13 | Mandate | New mandate "Desk setup": $300 budget, $150 per item, auto-pay under $40, save the PayPal account |
+| 0:29 | Buy | Goal in plain language, Claude researches (sped up), proposal with passed mandate checks, Approve, PayPal sandbox login, capture, receipt |
+| 1:23 | Auto-pay | A cart under $40 is paid by the saved PayPal account with no click |
+| 1:39 | Reject | A cart above the limit waits; reject with a reason; the agent revises in the same conversation |
+| 2:06 | Negotiate | Buyer agent haggles with a seller agent; the agreed price becomes an ordinary proposal |
+| 2:26 | Ledger | Every order and capture; click a row to open its mission; CSV export |
+| 2:38 | Insights | Spend by category, merchant and day (AG Charts) |
+| 2:47 | End card | Repository and live demo URL |
 
-Checklist before recording:
-- Clean dashboard: either a fresh server data file or simply create a new mandate on camera.
-- Sandbox mode with real PayPal checkout, buyer logged out so the login is visible (credentials in the README).
-- The mandate used on camera has *Save my PayPal account* ticked and the Vault feature is enabled on the sandbox app, so the second approval pays with one click.
-- Prepare in advance on the same mandate: a second mission with a pending proposal (for the one-click step), a mission whose goal fails the mandate (for the suggestion step), a finished negotiation mission (*Hire a service*), and one standing order so the Standing orders list is on the dashboard.
-- Pre-warm one mission so you know the agent's timing; Claude usually needs 20–60 seconds.
-- Keep third-party logos out of the frame except PayPal's own checkout.
-- Upload to YouTube as public or unlisted; paste the link in the Devpost form.
+Known gap: the order assistant (PayPal's hosted MCP server) is not shown. On the day of recording PayPal's
+sandbox MCP answered every tool call with `Unsupported cache mode: default`, so the video shows the ledger
+and makes no claim about the assistant.
+
+## Recording it again
+
+```bash
+cd scripts/video && npm i && npx playwright install chromium
+export BASE_URL=http://23.27.20.150:8080 MODE=live MANDATE_NAME="Desk setup"   # a fresh mandate name each time,
+for s in intro mandate buy autopay reject negotiate ledger insights; do node scenes.cjs $s; done   # so the PayPal login shows again
+node mkorder.cjs scenes intro,mandate,buy,autopay,reject,negotiate,ledger,insights > order.json
+node build.cjs order.json out        # out/mandate-demo.mp4 and out/mandate-demo.srt
+```
+
+`MODE=live` reads the sandbox buyer from the app's public `demo_buyer_hint` (or `PP_EMAIL` / `PP_PASS`) and masks
+the password wherever the app prints it. `LEDGER_GRID_ONLY=1` records the ledger scene without the assistant.
+`MODE=mock` records the offline demo with an "OFFLINE DEMO MODE" badge. Devpost rules: under 3:00, public on YouTube,
+no third-party music or logos beyond PayPal's own login page.

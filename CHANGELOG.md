@@ -4,6 +4,7 @@ Everything here was built during the PayPal AI Hackathon submission period (Oct 
 
 ## 2026-11-01
 
+- video: `scripts/video` records and captions the demo (Playwright screencast, cursor, burned-in captions, SRT) from the live app; the recorded video and how to redo it are in `docs/VIDEO_SCRIPT.md`. Known: PayPal's hosted sandbox MCP answers tool calls with `Unsupported cache mode: default` today, so the order assistant falls back to the ledger and says so.
 - ui: two review rounds on the redesign (84 findings fixed). The decision card is coloured by whose move it is and re-checks a waiting cart against today's mandate, offering a cheaper cart instead of an approval PayPal would refuse; the approval itself is part of the story; negotiations fold into one line under their transcript; money columns align, grids wrap long names instead of clipping them; phones get a sticky approve row, two-line product cells and stacked stat grids; dark mode bands, charts and inputs follow the theme; focus, live regions and labels for assistive technology
 - server: the missions list carries each waiting cart's amount and whether it still fits, an empty rejection stays empty (and still reaches the next buyer agent), an agent error never hides a waiting or paid cart, amounts in negotiation text read as money
 

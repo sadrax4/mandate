@@ -73,7 +73,7 @@ Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.
 3. **Approve & pay with PayPal**, log in with the sandbox buyer above, pay. Back in Mandate the capture ID appears and the **Ledger** shows the order. Because the mandate asked to save the account, the mandate card now shows *PayPal saved*.
 4. Start a second mission on the same mandate and approve it: it is paid with one click and no checkout. A cart under the auto-approve threshold is paid before the agent even finishes.
 5. Start another mission and **Reject with feedback** to see the agent revise. Try a goal outside the mandate (a kettle under a computers-only mandate): the agent explains, suggests the smallest change, and one click (**Allow kitchen & retry**) applies it.
-6. Open **Insights** for the charts, and on the **Ledger** ask the order assistant *"Did my most recent order get captured? Confirm it with PayPal."* to watch it read PayPal through the MCP server.
+6. Open **Insights** for the charts, and on the **Ledger** ask the order assistant *"Did my most recent order get captured? Confirm it with PayPal."* to watch it read PayPal through the MCP server. (Known issue, 1 Nov 2026: PayPal's hosted *sandbox* MCP currently answers tool calls with `Unsupported cache mode: default`; the assistant then answers from the ledger and says it could not check PayPal. The assistant's tool filtering and read-only guarantees are covered by tests with a fake MCP server.)
 
 The same flow runs locally with no keys at all (offline demo mode), see below.
 

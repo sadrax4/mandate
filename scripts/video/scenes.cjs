@@ -86,7 +86,7 @@ const SCENES = {
     await sleep(3200)
     if (LIVE) {
       await page.evaluate(() => { const e = document.querySelector('.topbar .modepill'); if (e) { e.style.outline = '3px solid #f59e0b'; e.style.outlineOffset = '6px'; e.style.borderRadius = '8px' } })
-      rec.cap('Running for real: PayPal sandbox, Claude,\na live retail catalog and PayPal\'s MCP server.')
+      rec.cap('Running for real: PayPal sandbox, Claude\nand a live retail catalog.')
       await sleep(4200)
     } else {
       rec.cap('The agent researches and proposes.\nOnly you and PayPal move money.')

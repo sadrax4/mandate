@@ -1,0 +1,1 @@
+Claude Code (Anthropic) was used as a pair programmer for the implementation, directed and reviewed by the author. Inside the product, the shopping agent and the order assistant run on Claude through the Anthropic API.

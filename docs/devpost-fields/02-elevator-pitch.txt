@@ -1,0 +1,1 @@
+An AI shopping agent that researches, compares and checks out with PayPal, but only inside a budget and rules you set, with human approval before every payment.

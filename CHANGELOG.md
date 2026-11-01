@@ -2,6 +2,11 @@
 
 Everything here was built during the PayPal AI Hackathon submission period (Oct 1 – Nov 12, 2026). Newest first.
 
+## 2026-11-01
+
+- ui: two review rounds on the redesign (84 findings fixed). The decision card is coloured by whose move it is and re-checks a waiting cart against today's mandate, offering a cheaper cart instead of an approval PayPal would refuse; the approval itself is part of the story; negotiations fold into one line under their transcript; money columns align, grids wrap long names instead of clipping them; phones get a sticky approve row, two-line product cells and stacked stat grids; dark mode bands, charts and inputs follow the theme; focus, live regions and labels for assistive technology
+- server: the missions list carries each waiting cart's amount and whether it still fits, an empty rejection stays empty (and still reaches the next buyer agent), an agent error never hides a waiting or paid cart, amounts in negotiation text read as money
+
 ## 2026-10-31
 
 - ui: redesigned around one action and one story. The dashboard opens on a goal bar (mandate, kind and repeat chosen inline, suggested goals as chips, a three-step guide that folds away), followed by what needs approval, the mandates as cards with the remaining amount first, standing orders and recent missions as rows. The mission page is one column: the goal, a storyline tracker (search, compare, check, propose, pay; revised, no proposal, failed), a decision card for every state (working, proposal, approved but unpaid, paid with the PayPal receipt, negotiation, suggestion, failed), the story of how the agent got here with tool calls folded into one line each and a switch to show every event, and the products it compared. No nested scrolling, flat cards, tabular numbers, phone layout without sideways scroll, dark mode throughout

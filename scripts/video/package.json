@@ -1,0 +1,6 @@
+{
+  "name": "mandate-demo-video",
+  "private": true,
+  "description": "Records and captions the Mandate demo video (Playwright screencast + ffmpeg)",
+  "dependencies": { "playwright": "1.49.1" }
+}

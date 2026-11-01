@@ -228,7 +228,14 @@ const SCENES = {
     rec.cap('Every order and capture lands in the ledger.')
     await sleep(3200)
     const ask = page.locator('input[aria-label="Question for the order assistant"]')
-    if (await ask.count()) {
+    if (process.env.LEDGER_GRID_ONLY === '1') {
+      // PayPal MCP could not answer live: show only what is really on screen, the ledger itself.
+      await L.scrollBy(page, 240, 900)
+      rec.cap('Click a row to open its mission.\nThe CSV export always includes every column.')
+      await sleep(4200)
+      await L.scrollTo(page, 0, 900)
+      await sleep(1200)
+    } else if (await ask.count()) {
       await L.scrollBy(page, 360, 900)
       rec.cap('An assistant reads PayPal itself through PayPal\'s\nMCP server. It can look, never pay.')
       await type(page, ask, process.env.ASK || 'Did my most recent order get captured? Confirm it with PayPal.', { delay: 30 })

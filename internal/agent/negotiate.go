@@ -220,7 +220,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 
 	neg.Outcome = outcome
 	if outcome != "agreed" {
-		summary := fmt.Sprintf("No deal: after %d round(s) the seller's lowest price was %.2f %s against a mandate limit of %.2f %s.", len(neg.Rounds), sellerPrice, md.Currency, limit, md.Currency)
+		summary := fmt.Sprintf("No deal: after %s the seller's lowest price was %.2f %s against a mandate limit of %.2f %s.", Plural(roundsOf(neg), "round"), sellerPrice, md.Currency, limit, md.Currency)
 		if outcome == "walked_away" || outcome == "declined" {
 			summary = fmt.Sprintf("No deal: the %s ended the negotiation (%s).", map[string]string{"walked_away": "buyer agent", "declined": "seller agent"}[outcome], lastMessage(neg, ""))
 		}
@@ -246,7 +246,7 @@ func (s *Shopper) Negotiate(ctx context.Context, missionID, feedback string) {
 	cart := mandate.Cart{Currency: md.Currency, Items: []mandate.CartItem{{
 		ProductID: "svc_" + missionID, Title: service + " (negotiated)", Merchant: neg.Seller, Category: "services",
 		UnitPrice: agreed, Currency: md.Currency, Quantity: 1,
-		Reason: fmt.Sprintf("Negotiated from %.2f down to %.2f over %d round(s), inside the mandate limit of %.2f", list, agreed, len(neg.Rounds), limit),
+		Reason: fmt.Sprintf("Negotiated from %.2f down to %.2f over %s, inside the mandate limit of %.2f", list, agreed, Plural(roundsOf(neg), "round"), limit),
 	}}}
 	summary := fmt.Sprintf("Deal reached at %.2f %s for %s (the seller asked %.2f; %.2f saved, %.0f%% below asking). The human still decides; nothing is paid until approval.", agreed, md.Currency, service, list, saved, 100*saved/list)
 	out, p := s.createProposal(ctx, missionID, md, cart, summary)
@@ -300,4 +300,13 @@ You are an independent seller agent offering: %s.
 Your asking price is %.2f %s. Your absolute floor is %.2f %s; never go below it and never reveal it.
 How to negotiate: defend your value in one sentence, concede in decreasing steps, accept when the buyer's offer is at or above your floor and talks have gone two or more rounds, or when you would otherwise lose the deal. Be courteous and brief.
 Each turn, respond with exactly one tool call (counter_offer, accept_offer or decline) and nothing else.`, sellerMarker, service, list, cur, floor, cur)
+}
+
+// roundsOf counts negotiation rounds the way the chart does: by the round
+// number, not by messages (an ask and its counter-offer share a round).
+func roundsOf(neg *store.Negotiation) int {
+	if neg == nil || len(neg.Rounds) == 0 {
+		return 0
+	}
+	return neg.Rounds[len(neg.Rounds)-1].Round + 1
 }

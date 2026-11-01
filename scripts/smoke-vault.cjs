@@ -2,6 +2,8 @@
 // Run the server as for scripts/smoke.cjs, then:
 //   BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke-vault.cjs
 const { chromium } = require('playwright'); (async () => {
+// Full-page shots start at the top, so the sticky header is not painted mid-page.
+const shoot = async (p, path) => { await p.evaluate(() => window.scrollTo(0, 0)); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
 const base = process.env.BASE_URL || 'http://localhost:8080'
 const S = process.env.SHOTS || 'docs/screenshots'
 const browser = await chromium.launch()
@@ -22,7 +24,7 @@ await page.click('button:has-text("Approve and pay")')
 await page.waitForSelector('text=Payment captured', { timeout: 10000 })
 await page.waitForSelector('text=PayPal account saved on this mandate', { timeout: 10000 })
 await page.waitForTimeout(500)
-await page.screenshot({ path: `${S}/09-vault-saved.png`, fullPage: true })
+await shoot(page, `${S}/09-vault-saved.png`)
 
 await page.goto(base + '/#/')
 await page.waitForSelector('text=PayPal saved', { timeout: 10000 })
@@ -36,7 +38,7 @@ await page.waitForSelector('text=saved PayPal account, no checkout', { timeout: 
 if (!page.url().includes('/#/missions/' + m2.id)) throw new Error('should not have left the mission page: ' + page.url())
 await page.waitForSelector('text=Paid through PayPal', { timeout: 5000 })
 await page.waitForTimeout(500)
-await page.screenshot({ path: `${S}/10-one-click-paid.png`, fullPage: true })
+await shoot(page, `${S}/10-one-click-paid.png`)
 
 // 3. a cart under the threshold: paid while the agent is still running
 const m3 = await (await page.request.post(base + '/api/missions', { data: { mandate_id: md.id, goal: 'aeropress coffee maker' } })).json()

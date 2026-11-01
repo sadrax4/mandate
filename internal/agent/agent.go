@@ -155,10 +155,10 @@ func (s *Shopper) Resume(ctx context.Context, missionID, feedback string) {
 		for _, p := range s.Store.ListProposals(missionID) {
 			last = fmt.Sprintf("Previous proposal %s (%s): %s", p.ID, p.Status, p.Summary)
 		}
-		msg = fmt.Sprintf("MANDATE (JSON):\n%s\n\nREMAINING BUDGET: %.2f %s\n\nGOAL: %s\n\n%s\n\nThe human rejected the previous proposal with this feedback: %q\n\nRevise your research and propose a new cart that addresses the feedback, or explain why it cannot be done.",
-			mustJSON(mandateView(md)), md.Remaining(), md.Currency, m.Goal, last, feedback)
+		msg = fmt.Sprintf("MANDATE (JSON):\n%s\n\nREMAINING BUDGET: %.2f %s\n\nGOAL: %s\n\n%s\n\n%s\n\nRevise your research and propose a new cart that addresses the feedback, or explain why it cannot be done.",
+			mustJSON(mandateView(md)), md.Remaining(), md.Currency, m.Goal, last, rejectionNote(feedback, "the previous proposal"))
 	} else {
-		msg = fmt.Sprintf("The human rejected your proposal with this feedback: %q\n\nRemaining budget is now %.2f %s. Revise and propose a new cart that addresses the feedback, or explain why it cannot be done.", feedback, md.Remaining(), md.Currency)
+		msg = fmt.Sprintf("%s\n\nRemaining budget is now %.2f %s. Revise and propose a new cart that addresses the feedback, or explain why it cannot be done.", rejectionNote(feedback, "your proposal"), md.Remaining(), md.Currency)
 	}
 	s.converse(ctx, missionID, sess, msg)
 }
@@ -458,7 +458,7 @@ func (s *Shopper) createProposal(ctx context.Context, missionID string, md *mand
 			m.Status = store.MissionAwaitingApproval
 		}
 	})
-	s.Store.AddEvent(missionID, "proposal", fmt.Sprintf("proposal %s created (%s): %d item(s), total %.2f %s", p.ID, p.Status, len(cart.Items), d.Total, d.Currency), map[string]any{"proposal_id": p.ID, "status": p.Status, "total": d.Total})
+	s.Store.AddEvent(missionID, "proposal", fmt.Sprintf("proposal %s created (%s): %s, total %.2f %s", p.ID, p.Status, Plural(len(cart.Items), "item"), d.Total, d.Currency), map[string]any{"proposal_id": p.ID, "status": p.Status, "total": d.Total})
 	if s.OnProposal != nil {
 		// For auto-approved proposals the hook creates (or completes) the
 		// payment and moves the mission to awaiting_payment or paid itself, so
@@ -586,4 +586,21 @@ func mustJSON(v any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// rejectionNote tells the agent what the human said when they sent a
+// proposal back; an empty reason is said plainly, never quoted as "".
+func rejectionNote(feedback, what string) string {
+	if strings.TrimSpace(feedback) == "" {
+		return fmt.Sprintf("The human rejected %s without giving a reason. Propose a different cart.", what)
+	}
+	return fmt.Sprintf("The human rejected %s with this feedback: %q", what, feedback)
+}
+
+// Plural writes a count with its noun: 1 item, 2 items.
+func Plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

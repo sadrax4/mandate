@@ -43,6 +43,11 @@ export type Mission = {
   negotiation?: Negotiation
   created_at: string
   updated_at: string
+  /** In mission lists only: what the current proposal costs and holds. */
+  proposal_total?: number
+  proposal_currency?: string
+  proposal_items?: number
+  proposal_first?: string
 }
 
 export type CartItem = {
@@ -232,7 +237,7 @@ export const money = (v: number | undefined | null, cur = 'USD') =>
 export const STATUS_LABEL: Record<string, string> = {
   running: 'Agent working',
   awaiting_approval: 'Needs your approval',
-  awaiting_payment: 'Pay with PayPal',
+  awaiting_payment: 'Waiting for payment',
   paid: 'Paid',
   cancelled: 'Cancelled',
   no_proposal: 'No proposal',
@@ -243,8 +248,8 @@ export const STATUS_LABEL: Record<string, string> = {
   rejected: 'Rejected',
   rejected_by_policy: 'Blocked by mandate',
   COMPLETED: 'Completed',
-  PAYER_ACTION_REQUIRED: 'Awaiting buyer',
-  APPROVED: 'Approved by buyer',
+  PAYER_ACTION_REQUIRED: 'Waiting for you at PayPal',
+  APPROVED: 'Approved at PayPal',
   CREATED: 'Created',
   CANCELLED: 'Cancelled',
   CAPTURE_FAILED: 'Capture failed',

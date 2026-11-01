@@ -133,8 +133,14 @@ export default function Dashboard() {
     return labels.map((label, i) => ({ key: label, label: done[i] ? `${label} ✓` : label, state: done[i] ? 'done' : i === current ? 'current' : 'future' }))
   }, [mandates.length, missions])
 
-  const awaiting = missions.filter((ms) => ms.status === 'awaiting_approval')
+  // Your turn: carts to approve, and approved carts whose PayPal checkout is unfinished (first: they hold budget).
+  const awaiting = missions
+    .filter((ms) => ms.status === 'awaiting_approval' || ms.status === 'awaiting_payment')
+    .sort((a, b) => (a.status === b.status ? 0 : a.status === 'awaiting_payment' ? -1 : 1))
+  const paying = awaiting.some((ms) => ms.status === 'awaiting_payment')
   const standing = missions.filter((ms) => (ms.repeat_days ?? 0) > 0)
+  const recent = useMemo(() => [...missions].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)), [missions])
+  const mandateName = (id: string) => mandates.find((m) => m.id === id)?.name ?? '—'
   const visibleMandates = showAll ? sorted : sorted.slice(0, VISIBLE_MANDATES)
   const cur = config?.currency || mandates[0]?.currency || 'USD'
   const sum = (f: (m: Mandate) => number) => mandates.reduce((s, m) => s + f(m), 0)
@@ -150,11 +156,9 @@ export default function Dashboard() {
             <a className="btn ghost lg" href="#/mandates/new">New mandate</a>
           </div>
           <div className="hero-steps">
-            <Tracker steps={steps} size="sm" />
-            <span>·</span>
-            <button type="button" className="link" aria-expanded={guideOpen} onClick={toggleGuide}>{guideOpen ? 'Hide how it works' : 'How it works'}</button>
+            <Tracker steps={steps} size="sm" label="Getting started" />
           </div>
-          {guideOpen && <HowItWorks />}
+          <HowItWorks />
         </section>
       ) : (
         <GoalBar
@@ -174,16 +178,25 @@ export default function Dashboard() {
       {loadError && <div className="alert bad">Could not load the dashboard: {loadError}</div>}
 
       {awaiting.length > 0 && (
-        <Card tone="attention" title="Needs your approval" action={<span className="pill pill-warn num">{awaiting.length}</span>} className="band">
+        <Card tone="attention" title={paying ? 'Waiting on you' : 'Needs your approval'} action={<span className="pill pill-warn num">{awaiting.length}</span>} className="band">
           <div className="rows" role="list">
-            {(approvalsAll ? awaiting : awaiting.slice(0, VISIBLE_APPROVALS)).map((ms) => (
-              <div key={ms.id} className="row approval link" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
-                <span className="goal" title={ms.goal}>{ms.goal}</span>
-                <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
-                <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
-                <a className="btn primary sm" href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>Review &amp; approve</a>
-              </div>
-            ))}
+            {(approvalsAll ? awaiting : awaiting.slice(0, VISIBLE_APPROVALS)).map((ms) => {
+              const act = ms.status === 'awaiting_payment' ? 'Finish payment' : 'Review & approve'
+              return (
+                <div key={ms.id} className="row approval clickable" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
+                  <span className="goal-cell">
+                    <span className="goal" title={ms.goal}>{ms.goal}</span>
+                    {ms.proposal_first && !ms.proposal_first.toLowerCase().startsWith(ms.goal.toLowerCase().slice(0, 24)) && <span className="what" title={ms.proposal_first}>{ms.proposal_first}{(ms.proposal_items ?? 0) > 1 ? ` +${(ms.proposal_items ?? 0) - 1} more` : ''}</span>}
+                  </span>
+                  <span className="sub">
+                    <span className="amount num">{ms.proposal_total ? money(ms.proposal_total, ms.proposal_currency) : ''}</span>
+                    <span className="muted">{mandateName(ms.mandate_id)}</span>
+                    <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
+                  </span>
+                  <a className="btn primary sm" href={`#/missions/${ms.id}`} aria-label={`${act}: ${ms.goal}`} onClick={(e) => e.stopPropagation()}>{act}</a>
+                </div>
+              )
+            })}
           </div>
           {!approvalsAll && awaiting.length > VISIBLE_APPROVALS && (
             <div className="rows-more"><button type="button" className="link" onClick={() => setApprovalsAll(true)}>and {awaiting.length - VISIBLE_APPROVALS} more…</button></div>
@@ -198,7 +211,7 @@ export default function Dashboard() {
             <Statline
               compact
               items={[
-                { value: money(sum((m) => m.total_budget), cur), label: 'Authority' },
+                { value: money(sum((m) => m.total_budget), cur), label: 'Total budget' },
                 { value: money(sum((m) => m.spent), cur), label: 'Spent' },
                 { value: money(sum((m) => m.reserved), cur), label: 'Reserved' },
                 { value: money(sum(remainingOf), cur), label: 'Available' },
@@ -227,11 +240,13 @@ export default function Dashboard() {
               const last = ms.last_run_id ? missions.find((x) => x.id === ms.last_run_id) : ms
               return (
                 <div key={ms.id} className="row standing" role="listitem">
-                  <span className="muted so-icon">⟳</span>
+                  <span className="muted so-icon" aria-hidden="true">⟳</span>
                   <span className="goal"><a href={`#/missions/${ms.id}`}>{ms.goal}</a></span>
-                  <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
-                  <span className="muted num">every {ms.repeat_days} days · next {shortDate(ms.next_run_at)}</span>
-                  <span>{last ? <a href={`#/missions/${last.id}`}><Pill status={last.status} /></a> : '—'}</span>
+                  <span className="sub">
+                    <span className="muted">{mandateName(ms.mandate_id)}</span>
+                    <span className="muted num">every {ms.repeat_days} days · next {shortDate(ms.next_run_at)}</span>
+                    <span className="last">{last ? <><span className="muted">last run</span> <a href={`#/missions/${last.id}`}><Pill status={last.status} /></a></> : '—'}</span>
+                  </span>
                   <StandingOrderButtons mission={ms} onChanged={load} />
                 </div>
               )
@@ -247,12 +262,15 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="rows" role="list">
-                {(missionsAll ? missions : missions.slice(0, VISIBLE_MISSIONS)).map((ms) => (
-                  <div key={ms.id} className="row recent link" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
+                {(missionsAll ? recent : recent.slice(0, VISIBLE_MISSIONS)).map((ms) => (
+                  <div key={ms.id} className="row recent clickable" role="listitem" onClick={() => navigate(`#/missions/${ms.id}`)}>
                     <span><Pill status={ms.status} /></span>
                     <span className="goal" title={ms.goal}><a href={`#/missions/${ms.id}`} onClick={(e) => e.stopPropagation()}>{ms.goal}</a></span>
-                    <span className="muted">{mandates.find((m) => m.id === ms.mandate_id)?.name ?? '—'}</span>
-                    <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
+                    <span className="sub">
+                      <span className="amount num">{ms.proposal_total && ['paid', 'awaiting_approval', 'awaiting_payment'].includes(ms.status) ? money(ms.proposal_total, ms.proposal_currency) : ''}</span>
+                      <span className="muted">{mandateName(ms.mandate_id)}</span>
+                      <span className="when num" title={new Date(ms.updated_at).toLocaleString()}>{relativeTime(ms.updated_at)}</span>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -330,7 +348,7 @@ function GoalBar({ mandates, selectedId, onSelect, demoExists, busy, onDemo, onS
       {startErr && <div className="alert bad">{startErr}</div>}
       <div className="goal-settings">
         <span className="setting">
-          <span>Under</span>
+          <span className="setting-label">Using</span>
           <InlineSelect value={selectedId} onChange={(e) => onSelect(e.target.value)} aria-label="Mandate for the next mission" title="The mandate the agent works under">
             {mandates.map((m) => (
               <option key={m.id} value={m.id}>{m.name} · {money(remainingOf(m), m.currency)} left</option>
@@ -356,8 +374,7 @@ function GoalBar({ mandates, selectedId, onSelect, demoExists, busy, onDemo, onS
         {DEMO_GOALS.map((g) => <SuggestionChip key={g.goal} text={g.goal} tag={g.tag} title={g.note} onClick={() => pick(g)} />)}
       </div>
       <div className="hero-steps">
-        <Tracker steps={steps} size="sm" />
-        <span>·</span>
+        <Tracker steps={steps} size="sm" label="Getting started" />
         <button type="button" className="link" aria-expanded={guideOpen} onClick={onToggleGuide}>{guideOpen ? 'Hide how it works' : 'How it works'}</button>
       </div>
       {guideOpen && <HowItWorks />}
@@ -373,7 +390,7 @@ function HowItWorks() {
       <div className="cols">
         <div className="col"><span className="n">1</span><span>Create the demo mandate, or set your own limits with New mandate.</span></div>
         <div className="col"><span className="n">2</span><span>Pick a suggested goal and Start mission. The agent searches {config?.catalog === 'channel3' ? 'real products through Channel3' : 'the demo catalog'}, checks the mandate and proposes.</span></div>
-        <div className="col"><span className="n">3</span><span>Approve &amp; pay with PayPal{mock ? ' (a built-in simulator stands in here)' : config?.demo_buyer_hint ? <> and log in with the sandbox buyer <code>{config.demo_buyer_hint}</code></> : ''}. The capture ID lands in the Ledger and the Insights charts.</span></div>
+        <div className="col"><span className="n">3</span><span>Approve &amp; pay with PayPal{mock ? ' (a built-in simulator stands in here)' : config?.demo_buyer_hint ? <> and log in with the sandbox buyer <code>{config.demo_buyer_hint}</code></> : ''}. The payment shows up in the Ledger and the Insights charts.</span></div>
       </div>
       <p className="then">Then try: approve a second cart with one click, reject with feedback, start a goal the mandate cannot fit and accept the agent's fix, or make a mission a monthly standing order. Nothing here moves real money: PayPal runs in {mock ? 'simulated' : 'sandbox'} mode.</p>
     </div>
@@ -388,14 +405,14 @@ function MandateCard({ mandate: m, missions, selected, onSelect, onChanged }: { 
   return (
     <Card
       id={'mandate-' + m.id}
-      className={`mandate-card${selected ? ' selected' : ''}`}
+      className={`mandate-card${selected ? ' selected' : ''}${open ? ' open' : ''}`}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest('a, button, details, summary, input')) return
         onSelect()
       }}
     >
       <div className="name-row">
-        <span className="name" title={m.name}>{m.name}</span>
+        <h3 className="name" title={m.name}>{m.name}</h3>
         {active > 0 && <Pill status="running">{active} active</Pill>}
       </div>
       <div className="money-row">
@@ -404,37 +421,29 @@ function MandateCard({ mandate: m, missions, selected, onSelect, onChanged }: { 
       </div>
       <BudgetBar compact total={m.total_budget} spent={m.spent} reserved={m.reserved} currency={m.currency} />
       <div className="rules" title={describeRules(m)}>{describeRules(m)}</div>
-      {(m.has_saved_payment || (m.auto_approve_under > 0 && !m.require_approval)) && (
-        <div className="chips">
-          {m.auto_approve_under > 0 && !m.require_approval && <Chip>auto-pay under {money(m.auto_approve_under, m.currency)}</Chip>}
-          {m.has_saved_payment && <Chip tone="good">PayPal saved</Chip>}
-        </div>
-      )}
+      <div className="chips">
+        {m.auto_approve_under > 0 && !m.require_approval && <Chip>auto-pay under {money(m.auto_approve_under, m.currency)}</Chip>}
+        {m.has_saved_payment && <Chip tone="good">PayPal saved</Chip>}
+      </div>
       <div className="card-foot">
-        <button type="button" className="link use" aria-pressed={selected} onClick={onSelect}>{selected ? 'Selected for the next mission ✓' : 'Use for next mission'}</button>
-        <button type="button" className="link" aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? 'Details ▴' : 'Details ▾'}</button>
+        <button type="button" className="link use" aria-pressed={selected} aria-label={`${selected ? 'Selected for the next mission' : 'Use for next mission'}: ${m.name}`} onClick={onSelect}>{selected ? 'Selected for the next mission ✓' : 'Use for next mission'}</button>
+        <button type="button" className="link" aria-expanded={open} aria-label={`Details: ${m.name}`} onClick={() => setOpen((v) => !v)}>Details <span aria-hidden="true">{open ? '▴' : '▾'}</span></button>
       </div>
       {open && (
         <div className="card-details">
           <div className="chips" style={{ margin: 0 }}>
-            {m.max_per_item > 0 && <Chip>≤ {money(m.max_per_item, m.currency)} per item</Chip>}
-            {m.auto_approve_under > 0 ? <Chip>auto-approve under {money(m.auto_approve_under, m.currency)}</Chip> : <Chip>every cart needs approval</Chip>}
-            {m.allowed_categories && m.allowed_categories.length > 0 && <Chip>only {m.allowed_categories.join(', ')}</Chip>}
-            {m.blocked_merchants && m.blocked_merchants.length > 0 && <Chip>never {m.blocked_merchants.join(', ')}</Chip>}
-            {m.min_rating > 0 && <Chip>rating ≥ {m.min_rating}</Chip>}
+            {!(m.auto_approve_under > 0 && !m.require_approval) && <Chip>every cart needs your approval</Chip>}
             {m.has_saved_payment ? (
               <>
-                <Chip tone="good">PayPal saved · one-click approvals{m.auto_approve_under > 0 && !m.require_approval ? `, auto-pay under ${money(m.auto_approve_under, m.currency)}` : ''}</Chip>
+                <Chip tone="good">PayPal saved{m.vault_payer ? ` · ${m.vault_payer}` : ''} · one-click approvals</Chip>
                 <ForgetButton mandate={m} onChanged={onChanged} />
               </>
             ) : m.save_payment_method ? (
               <Chip>saves PayPal at the first checkout</Chip>
-            ) : null}
-          </div>
-          <div className="budget-legend">
-            <span><i className="sw sw-spent" /> spent {money(m.spent, m.currency)}</span>
-            <span><i className="sw sw-reserved" /> reserved {money(m.reserved, m.currency)}</span>
-            <span className="budget-remaining num">{money(remaining, m.currency)} left of {money(m.total_budget, m.currency)}</span>
+            ) : (
+              <Chip>pays through PayPal checkout</Chip>
+            )}
+            <span className="muted num spent-line">{money(m.spent, m.currency)} spent</span>
           </div>
           <div className="label">{missions.length} mission{missions.length === 1 ? '' : 's'}</div>
           {mini.length === 0 ? (
@@ -478,8 +487,8 @@ export function StandingOrderButtons({ mission, onChanged }: { mission: Mission;
   }
   return (
     <span className="actions" style={{ gap: 6 }}>
-      <button className="btn ghost sm" onClick={() => act('run')} disabled={busy !== ''}>{busy === 'run' ? 'Starting…' : 'Run now'}</button>
-      <button className="btn ghost sm" onClick={() => act('stop')} disabled={busy !== ''}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
+      <button className="btn ghost sm" aria-label={`Run now: ${mission.goal}`} onClick={() => act('run')} disabled={busy !== ''}>{busy === 'run' ? 'Starting…' : 'Run now'}</button>
+      <button className="btn ghost sm" aria-label={`Stop: ${mission.goal}`} onClick={() => act('stop')} disabled={busy !== ''}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</button>
       {err && <span className="alert bad" style={{ padding: '2px 8px', margin: 0 }}>{err}</span>}
     </span>
   )

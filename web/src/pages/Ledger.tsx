@@ -2,10 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ColDef, GridApi } from 'ag-grid-community'
 import { api, isFinalPayment, label, money, statusCellClass, type AskResult, type LedgerRow } from '../api'
 import { useConfig } from '../config'
-import { Grid } from '../components/Grid'
+import { Grid, NUM, useMediaQuery } from '../components/Grid'
 import { Markdown } from '../components/Markdown'
 import { Card, Chip, Empty, Statline, SuggestionChip, navigate } from '../components/ui'
-import { NUM } from '../components/Grid'
+import { shortStamp } from '../format'
+
+/** Phone: one cell tells the order (goal, when, status); the amount sits beside it. */
+function OrderCell(p: { data?: LedgerRow }) {
+  if (!p.data) return null
+  return (
+    <div className="cart-item">
+      <div className="cart-title clamp2">{p.data.goal}</div>
+      <div className="cart-reason">{shortStamp(p.data.created_at)} · <span className={statusCellClass(p.data.status)}>{label(p.data.status)}</span></div>
+    </div>
+  )
+}
 
 const ASK_EXAMPLES = [
   'Did my most recent order get captured? Confirm it with PayPal.',
@@ -57,25 +68,30 @@ export default function Ledger() {
     }
   }, [rows])
 
-  const [details, setDetails] = useState(false) // payer and environment columns
+  const [details, setDetails] = useState(false) // capture, payer and environment columns
+  const phone = useMediaQuery('(max-width: 720px)')
+  const EXTRA = ['capture_id', 'payer_email', 'mode']
   useEffect(() => {
-    gridApi.current?.setColumnsVisible(['payer_email', 'mode'], details)
-  }, [details])
+    gridApi.current?.setColumnsVisible(EXTRA, details && !phone)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [details, phone])
   const cols = useMemo<ColDef<LedgerRow>[]>(
     () => [
-      { field: 'created_at', headerName: 'When', valueFormatter: (p) => new Date(p.value).toLocaleString(), minWidth: 170, sort: 'desc' },
-      { field: 'mandate_name', headerName: 'Mandate', minWidth: 130 },
-      { field: 'goal', headerName: 'Mission goal', minWidth: 260, flex: 2 },
-      { field: 'items', headerName: 'Items', maxWidth: 90, filter: 'agNumberColumnFilter', cellClass: NUM },
-      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: 110, cellClass: NUM },
-      { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 130 },
-      { field: 'vaulted', headerName: 'Paid via', valueFormatter: (p) => (p.value ? 'saved PayPal' : 'checkout'), minWidth: 110 },
-      { field: 'id', headerName: 'PayPal order', width: 160, flex: 0, tooltipField: 'id' },
-      { field: 'capture_id', headerName: 'Capture', width: 150, flex: 0, tooltipField: 'capture_id' },
+      { colId: 'order', headerName: 'Order', field: 'goal', cellRenderer: OrderCell, autoHeight: true, wrapText: true, minWidth: 150, flex: 1, hide: !phone },
+      { field: 'created_at', headerName: 'When', valueFormatter: (p) => shortStamp(p.value), tooltipValueGetter: (p) => new Date(p.value).toLocaleString(), width: 150, flex: 0, sort: 'desc', hide: phone },
+      { field: 'mandate_name', headerName: 'Mandate', minWidth: 120, hide: phone },
+      { field: 'goal', headerName: 'Mission goal', minWidth: 200, flex: 2, tooltipField: 'goal', hide: phone },
+      { field: 'items', headerName: 'Items', minWidth: 76, maxWidth: 84, filter: 'agNumberColumnFilter', suppressHeaderFilterButton: true, cellClass: NUM, hide: phone },
+      { field: 'amount', headerName: 'Amount', valueFormatter: (p) => money(p.value, p.data?.currency), filter: 'agNumberColumnFilter', type: 'rightAligned', minWidth: phone ? 92 : 105, maxWidth: phone ? 110 : undefined, cellClass: NUM },
+      { field: 'status', headerName: 'Status', valueFormatter: (p) => label(p.value), cellClass: (p) => statusCellClass(p.value), minWidth: 170, hide: phone },
+      // A value getter (not a formatter) so AG Grid never shows the boolean as a checkbox, and filters and CSV read words.
+      { colId: 'vaulted', headerName: 'Paid via', cellDataType: 'text', valueGetter: (p) => (p.data?.vaulted ? 'saved PayPal' : 'PayPal checkout'), cellClass: (p) => (p.value === 'saved PayPal' ? 'cell-via-saved' : ''), minWidth: 145, hide: phone },
+      { field: 'id', headerName: 'PayPal order', width: 180, flex: 0, tooltipField: 'id', hide: phone },
+      { field: 'capture_id', headerName: 'Capture', width: 160, flex: 0, tooltipField: 'capture_id', hide: true },
       { field: 'payer_email', headerName: 'Payer', width: 170, flex: 0, tooltipField: 'payer_email', hide: true },
       { field: 'mode', headerName: 'Mode', width: 90, flex: 0, hide: true },
     ],
-    [],
+    [phone],
   )
 
   return (
@@ -100,7 +116,7 @@ export default function Ledger() {
         action={
           rows.length > 0 ? (
             <div className="toolbar">
-              <label className="check" style={{ fontSize: 13 }}>
+              <label className="check hide-phone" style={{ fontSize: 13 }}>
                 <input type="checkbox" checked={details} onChange={(e) => setDetails(e.target.checked)} /> More columns
               </label>
               <button className="btn ghost" onClick={() => gridApi.current?.exportDataAsCsv({ fileName: 'mandate-ledger.csv', allColumns: true })}>
@@ -119,15 +135,14 @@ export default function Ledger() {
             getRowId={(p) => p.data.id}
             onGridReady={(e) => {
               gridApi.current = e.api
-              e.api.setColumnsVisible(['payer_email', 'mode'], details)
+              e.api.setColumnsVisible(EXTRA, details && !phone)
             }}
-            onRowClicked={(e) => e.data && navigate(`#/missions/${e.data.mission_id}`)}
-            rowClass="row-link"
+            onRowOpen={(r) => navigate(`#/missions/${r.mission_id}`)}
             pagination={rows.length > 25}
             paginationPageSize={25}
           />
         )}
-        {rows.length > 0 && <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Click a row to open its mission. The CSV export always includes every column.</p>}
+        {rows.length > 0 && <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>Click a row, or press Enter on it, to open its mission. The CSV export always includes every column.</p>}
       </Card>
 
       {mcp?.enabled && (

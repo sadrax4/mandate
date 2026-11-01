@@ -203,7 +203,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/mandates/{id}/forget-payment", s.handleForgetPayment)
 
 	m.HandleFunc("GET /api/missions", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, s.st.ListMissions(r.URL.Query().Get("mandate_id")))
+		writeJSON(w, 200, s.missionRows(r.URL.Query().Get("mandate_id")))
 	})
 	m.HandleFunc("POST /api/missions", s.handleCreateMission)
 	m.HandleFunc("GET /api/missions/{id}", s.handleGetMission)
@@ -420,7 +420,7 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 	s.st.PutMission(m)
 	s.st.AddEvent(m.ID, "status", "mission created: "+in.Goal, nil)
 	if m.RepeatDays > 0 {
-		s.st.AddEvent(m.ID, "status", fmt.Sprintf("standing order: this goal runs again every %d day(s), next on %s; each run is checked against the mandate like any other", m.RepeatDays, m.NextRunAt.UTC().Format("2006-01-02")), map[string]any{"repeat_days": m.RepeatDays, "next_run_at": m.NextRunAt})
+		s.st.AddEvent(m.ID, "status", fmt.Sprintf("standing order: this goal runs again every %s, next on %s; each run is checked against the mandate like any other", agent.Plural(m.RepeatDays, "day"), m.NextRunAt.UTC().Format("2006-01-02")), map[string]any{"repeat_days": m.RepeatDays, "next_run_at": m.NextRunAt})
 	}
 	s.startAgent(m, "")
 	writeJSON(w, 201, m)
@@ -1113,10 +1113,9 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	_ = readJSON(r, &in)
+	// An empty reason stays empty: the UI must not quote a placeholder back
+	// to the human as if they had written it.
 	in.Reason = truncate(strings.TrimSpace(in.Reason), MaxFeedbackLen)
-	if in.Reason == "" {
-		in.Reason = "rejected without a reason"
-	}
 	s.payMu.Lock()
 	p, err := s.st.GetProposal(r.PathValue("id"))
 	if err != nil {
@@ -1181,7 +1180,11 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 		m.OrderID = ""
 	})
 	s.payMu.Unlock()
-	s.st.AddEvent(p.MissionID, "rejected", "human rejected the proposal: "+in.Reason, map[string]any{"proposal_id": p.ID})
+	msg := "human rejected the proposal"
+	if in.Reason != "" {
+		msg += ": " + in.Reason
+	}
+	s.st.AddEvent(p.MissionID, "rejected", msg, map[string]any{"proposal_id": p.ID})
 	if ms, err := s.st.GetMission(p.MissionID); err == nil && ms.Kind == "negotiate" {
 		go s.shopper.Negotiate(context.Background(), p.MissionID, in.Reason)
 	} else {
@@ -1976,3 +1979,32 @@ func logRequests(next http.Handler) http.Handler {
 
 // QueryEscape is exported for templates/tests that build redirect URLs.
 func QueryEscape(s string) string { return url.QueryEscape(s) }
+
+// missionRow is a mission as the lists show it, with the amount and first
+// item of its current proposal, so an approval row can say what it costs
+// before anyone opens it.
+type missionRow struct {
+	*store.Mission
+	ProposalTotal    float64 `json:"proposal_total,omitempty"`
+	ProposalCurrency string  `json:"proposal_currency,omitempty"`
+	ProposalItems    int     `json:"proposal_items,omitempty"`
+	ProposalFirst    string  `json:"proposal_first,omitempty"`
+}
+
+func (s *Server) missionRows(mandateID string) []missionRow {
+	ms := s.st.ListMissions(mandateID)
+	out := make([]missionRow, 0, len(ms))
+	for _, m := range ms {
+		row := missionRow{Mission: m}
+		if m.ProposalID != "" {
+			if p, err := s.st.GetProposal(m.ProposalID); err == nil && len(p.Cart.Items) > 0 {
+				row.ProposalTotal = p.Decision.Total
+				row.ProposalCurrency = p.Decision.Currency
+				row.ProposalItems = len(p.Cart.Items)
+				row.ProposalFirst = p.Cart.Items[0].Title
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}

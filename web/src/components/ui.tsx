@@ -10,26 +10,33 @@ export function Pill({ status, children }: { status: string; children?: ReactNod
   )
 }
 
-export function Card({ title, action, children, className = '', id, tone, onClick }: {
+export function Card({ title, action, children, className = '', id, tone, state, onClick }: {
   title?: ReactNode
   action?: ReactNode
   children: ReactNode
   className?: string
   id?: string
   tone?: 'attention' | 'decision'
+  /** Colours the decision card's head band: good (paid), warn (your turn), neutral (no result), live (working). */
+  state?: string
   onClick?: (e: MouseEvent<HTMLElement>) => void
 }) {
   return (
-    <section className={`card ${tone ?? ''} ${className}`} id={id} onClick={onClick}>
+    <section className={`card ${tone ?? ''} ${className}`} id={id} data-state={state} onClick={onClick}>
       {(title || action) && (
         <header className="card-head">
-          <h3>{title}</h3>
+          <h2 className="card-title">{title}</h2>
           {action}
         </header>
       )}
       {children}
     </section>
   )
+}
+
+/** A decorative glyph that screen readers skip. */
+export function Glyph({ children }: { children: ReactNode }) {
+  return <span aria-hidden="true">{children}</span>
 }
 
 export function Empty({ children }: { children: ReactNode }) {
@@ -76,18 +83,21 @@ export function Statline({ items, compact }: { items: { value: ReactNode; label:
 
 export type TrackerStep = { key: string; label: string; state: 'done' | 'current' | 'future' | 'failed' | 'revised'; note?: string }
 
+const STEP_WORD: Record<TrackerStep['state'], string> = { done: 'done', current: 'current step', future: '', failed: 'stopped here', revised: 'revised' }
+
 /** Steps of a story as dots on a line: done, current (pulsing), future, failed, revised. */
-export function Tracker({ steps, size }: { steps: TrackerStep[]; size?: 'sm' }) {
+export function Tracker({ steps, size, label: name }: { steps: TrackerStep[]; size?: 'sm' | 'full'; label?: string }) {
   return (
-    <div className={`tracker${size === 'sm' ? ' sm' : ''}`} aria-label={steps.map((s) => `${s.label} (${s.state})`).join(' → ')}>
+    <ol className={`tracker${size ? ' ' + size : ''}`} role="list" aria-label={name ?? 'Progress'}>
       {steps.map((s) => (
-        <span key={s.key} className={`step ${s.state}`}>
-          <span className="dot" />
+        <li key={s.key} className={`step ${s.state}`} aria-current={s.state === 'current' ? 'step' : undefined}>
+          <span className="dot" aria-hidden="true" />
           {s.label}
+          {STEP_WORD[s.state] && <span className="sr-only">, {STEP_WORD[s.state]}</span>}
           {s.note && <span className="note">{s.note}</span>}
-        </span>
+        </li>
       ))}
-    </div>
+    </ol>
   )
 }
 

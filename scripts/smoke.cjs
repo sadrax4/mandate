@@ -3,6 +3,8 @@
 // then: BASE_URL=http://localhost:8080 SHOTS=/tmp/shots node scripts/smoke.cjs
 // Requires: npm i -g playwright && npx playwright install chromium
 const { chromium } = require('playwright'); (async () => {
+// Full-page shots start at the top, so the sticky header is not painted mid-page.
+const shoot = async (p, path) => { await p.evaluate(() => window.scrollTo(0, 0)); await p.waitForTimeout(150); await p.screenshot({ path, fullPage: true }) }
 const base = process.env.BASE_URL || 'http://localhost:8080'
 const S = process.env.SHOTS || 'docs/screenshots'
 const browser = await chromium.launch()
@@ -23,27 +25,27 @@ await page.waitForSelector('text=Create demo mandate')
 await page.click('text=Create demo mandate')
 await page.waitForSelector('.mandate-card .name:has-text("Desk refresh")')
 await page.waitForSelector('text=Selected for the next mission')
-await page.screenshot({ path: `${S}/01-dashboard.png`, fullPage: true })
+await shoot(page, `${S}/01-dashboard.png`)
 
 await page.click('text=A mechanical keyboard with brown switches')
 await page.click('button:has-text("Start mission")')
 await page.waitForURL(/#\/missions\//)
 await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
 await page.waitForTimeout(800)
-await page.screenshot({ path: `${S}/02-mission-proposal.png`, fullPage: true })
+await shoot(page, `${S}/02-mission-proposal.png`)
 
 await page.click('button:has-text("Approve & pay with PayPal")')
 await page.waitForSelector('text=Pay with PayPal (simulated)', { timeout: 10000 })
-await page.screenshot({ path: `${S}/03-mock-paypal.png`, fullPage: true })
+await shoot(page, `${S}/03-mock-paypal.png`)
 await page.click('button:has-text("Approve and pay")')
 await page.waitForSelector('text=Payment captured', { timeout: 10000 })
 await page.waitForTimeout(800)
-await page.screenshot({ path: `${S}/04-mission-paid.png`, fullPage: true })
+await shoot(page, `${S}/04-mission-paid.png`)
 
 await page.goto(base + '/#/ledger')
 await page.waitForSelector('.ag-row', { timeout: 10000 })
 await page.waitForTimeout(500)
-await page.screenshot({ path: `${S}/05-ledger.png`, fullPage: true })
+await shoot(page, `${S}/05-ledger.png`)
 
 // rejection flow on a fresh mandate with enough budget
 const res = await page.request.post(base + '/api/mandates', { data: { name: 'Audio upgrade', currency: 'USD', total_budget: 400, max_per_item: 400, allowed_categories: ['audio'], min_rating: 4 } })
@@ -56,7 +58,7 @@ await page.fill('textarea', 'too expensive, find something cheaper')
 await page.click('text=Send back to the agent')
 await page.waitForSelector('text=Earlier proposals', { timeout: 20000 })
 await page.waitForTimeout(800)
-await page.screenshot({ path: `${S}/06-mission-after-reject.png`, fullPage: true })
+await shoot(page, `${S}/06-mission-after-reject.png`)
 
 // a goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries
 const tight = await (await page.request.post(base + '/api/mandates', { data: { name: 'Office only', currency: 'USD', total_budget: 300, max_per_item: 300, allowed_categories: ['computers', 'office'] } })).json()
@@ -64,8 +66,8 @@ const ms2 = await (await page.request.post(base + '/api/missions', { data: { man
 await page.goto(base + '/#/missions/' + ms2.id)
 await page.waitForSelector('text=The agent suggests:', { timeout: 20000 })
 await page.waitForTimeout(600)
-await page.screenshot({ path: `${S}/10-suggestion.png`, fullPage: true })
-await page.click('button:has-text("Amend mandate & retry")')
+await shoot(page, `${S}/10-suggestion.png`)
+await page.click('.suggestion-box button.btn.primary')
 await page.waitForURL((u) => u.hash.startsWith('#/missions/') && !u.hash.includes(ms2.id), { timeout: 10000 })
 await page.waitForSelector('text=Retry of', { timeout: 10000 })
 await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
@@ -82,7 +84,7 @@ await page.waitForSelector('text=Run of', { timeout: 10000 })
 await page.goto(base + '/#/')
 await page.waitForSelector('text=Standing orders', { timeout: 10000 })
 await page.waitForTimeout(800)
-await page.screenshot({ path: `${S}/11-standing-orders.png`, fullPage: true })
+await shoot(page, `${S}/11-standing-orders.png`)
 
 // agent-to-agent: a buyer agent negotiates a service with a seller agent, inside the mandate
 const svc = await (await page.request.post(base + '/api/mandates', { data: { name: 'Freelance', currency: 'USD', total_budget: 600, max_per_item: 200 } })).json()
@@ -92,7 +94,7 @@ await page.waitForSelector('text=Agent-to-agent negotiation', { timeout: 20000 }
 await page.waitForSelector('text=deal at', { timeout: 20000 })
 await page.waitForSelector('text=Approve & pay with PayPal', { timeout: 20000 })
 await page.waitForTimeout(1200)
-await page.screenshot({ path: `${S}/13-negotiation.png`, fullPage: true })
+await shoot(page, `${S}/13-negotiation.png`)
 const nd = await (await page.request.get(base + '/api/missions/' + nm.id)).json()
 if (nd.mission.negotiation.agreed_price > 200) throw new Error('deal above the mandate limit: ' + nd.mission.negotiation.agreed_price)
 
@@ -101,17 +103,17 @@ await page.goto(base + '/#/insights')
 await page.waitForSelector('text=Spending insights')
 await page.waitForSelector('.ag-row', { timeout: 10000 })
 await page.waitForTimeout(1200)
-await page.screenshot({ path: `${S}/09-insights.png`, fullPage: true })
+await shoot(page, `${S}/09-insights.png`)
 
 await page.goto(base + '/#/mandates/new')
 await page.waitForSelector('text=New mandate')
-await page.screenshot({ path: `${S}/07-new-mandate.png`, fullPage: true })
+await shoot(page, `${S}/07-new-mandate.png`)
 
 // dark mode dashboard
 const dark = await browser.newPage({ viewport: { width: 1360, height: 900 }, colorScheme: 'dark' })
 await dark.goto(base + '/#/')
 await dark.waitForSelector('.mandate-card .name:has-text("Desk refresh")')
-await dark.screenshot({ path: `${S}/08-dashboard-dark.png`, fullPage: true })
+await shoot(dark, `${S}/08-dashboard-dark.png`)
 
 // phone width: no sideways scroll on the dashboard or a mission page
 const phone = await browser.newPage({ viewport: { width: 375, height: 812 } })
@@ -121,7 +123,7 @@ for (const h of ['#/', '#/missions/' + ms.id]) {
   const sw = await phone.evaluate(() => document.documentElement.scrollWidth)
   if (sw > 375) throw new Error(`horizontal overflow at 375px on ${h}: ${sw}`)
 }
-await phone.screenshot({ path: `${S}/12-dashboard-phone.png`, fullPage: true })
+await shoot(phone, `${S}/12-dashboard-phone.png`)
 await browser.close()
 if (pageErrors) throw new Error(`${pageErrors} page error(s) during the walk-through`)
 console.log('SMOKE_OK')

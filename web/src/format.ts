@@ -39,3 +39,7 @@ export const describeRules = (m: Mandate) => {
 }
 
 export const remainingOf = (m: Mandate) => Math.max(0, m.total_budget - m.spent - m.reserved)
+
+/** Oct 31, 7:16 PM: a timestamp short enough for a grid cell. */
+export const shortStamp = (iso?: string | null) =>
+  iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'

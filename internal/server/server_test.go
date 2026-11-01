@@ -262,6 +262,54 @@ func TestRejectResumesAgent(t *testing.T) {
 	}
 }
 
+// A rejection without a reason stays empty: nothing is put in the human's
+// mouth, the agent still revises, and the mission list carries the amount
+// of the proposal waiting for approval.
+func TestRejectWithoutReasonAndListAmounts(t *testing.T) {
+	e := newEnv(t)
+	var md map[string]any
+	e.post("/api/mandates", map[string]any{"name": "Audio", "total_budget": 400, "allowed_categories": []string{"audio"}}, &md)
+	var ms map[string]any
+	e.post("/api/missions", map[string]any{"mandate_id": md["id"], "goal": "noise cancelling headphones"}, &ms)
+	mid := ms["id"].(string)
+	out := e.waitMission(mid, store.MissionAwaitingApproval)
+	first := out["proposals"].([]any)[0].(map[string]any)
+	var list []map[string]any
+	e.get("/api/missions", &list)
+	if len(list) != 1 || list[0]["id"] != mid || list[0]["proposal_total"] != first["decision"].(map[string]any)["total"] || list[0]["proposal_items"] != float64(1) || list[0]["proposal_first"] == "" {
+		t.Fatalf("mission row = %v", list)
+	}
+	var rj map[string]any
+	if code := e.post("/api/proposals/"+first["id"].(string)+"/reject", map[string]any{"reason": "   "}, &rj); code != 200 {
+		t.Fatalf("reject: %d %v", code, rj)
+	}
+	out = e.waitMission(mid, store.MissionAwaitingApproval)
+	props := out["proposals"].([]any)
+	if len(props) != 2 {
+		t.Fatalf("expected a revised proposal, got %d", len(props))
+	}
+	if fb, _ := props[0].(map[string]any)["feedback"].(string); fb != "" {
+		t.Fatalf("feedback should stay empty, got %q", fb)
+	}
+	found := false
+	for _, ev := range out["events"].([]any) {
+		m := ev.(map[string]any)
+		if m["type"] == "rejected" {
+			found = true
+			if m["message"] != "human rejected the proposal" {
+				t.Fatalf("rejected event = %q", m["message"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no rejected event")
+	}
+	e.get("/api/missions", &list)
+	if list[0]["proposal_total"] != props[1].(map[string]any)["decision"].(map[string]any)["total"] {
+		t.Fatalf("row should follow the new proposal: %v", list[0])
+	}
+}
+
 func TestAutoApproveGoesStraightToPayPal(t *testing.T) {
 	e := newEnv(t)
 	var md map[string]any

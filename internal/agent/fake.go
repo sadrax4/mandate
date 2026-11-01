@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -102,7 +103,7 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 		return out, nil
 	}
 
-	emit(Event{Type: "assistant", Message: fmt.Sprintf("I will search for %d item(s) and check each cart against the mandate before proposing.", len(needs))})
+	emit(Event{Type: "assistant", Message: fmt.Sprintf("I will search for %s and check each cart against the mandate before proposing.", Plural(len(needs), "item"))})
 	var choices []choice
 	for _, need := range needs {
 		q := map[string]any{"query": need, "limit": 8}
@@ -177,6 +178,7 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 		if !repaired {
 			if field, value, reason := suggestFix(out, choices); field != "" {
 				_, _ = call("suggest_mandate_change", map[string]any{"field": field, "value": value, "reason": reason})
+				return fmt.Sprintf("The goal cannot be met within the mandate: %s. The smallest change that would unblock it: %s.", summarise(out), changeHint(field, value)), nil
 			}
 			return fmt.Sprintf("The goal cannot be met within the mandate: %s. Consider raising the budget or the per-item cap.", summarise(out)), nil
 		}
@@ -190,7 +192,7 @@ func (s *fakeSession) Send(ctx context.Context, userText string, tools []Tool, e
 		names = append(names, p.Title)
 		items = append(items, map[string]any{"product_id": p.ID, "quantity": 1, "reason": fmt.Sprintf("Best value for %q: rated %.1f at %.2f from %s", c.need, p.Rating, p.Price, p.Merchant)})
 	}
-	summary := fmt.Sprintf("Proposed %d item(s): %s. Each item was the best-rated option within the limits of the mandate.", len(items), strings.Join(names, "; "))
+	summary := fmt.Sprintf("Proposed %s: %s. Each item was the best-rated option within the limits of the mandate.", Plural(len(items), "item"), strings.Join(names, "; "))
 	out, err := call("propose_cart", map[string]any{"items": items, "summary": summary})
 	if err != nil {
 		return "", err
@@ -311,11 +313,23 @@ func summarise(decisionJSON string) string {
 		} `json:"violations"`
 	}
 	_ = json.Unmarshal([]byte(decisionJSON), &d)
+	// Each category violation repeats the allowed list; say it once at the end.
 	var msgs []string
+	allowed := ""
 	for _, v := range d.Violations {
-		msgs = append(msgs, v.Message)
+		if m := reAllowed.FindStringSubmatch(v.Message); m != nil {
+			allowed = m[1]
+		}
+		msg := strings.TrimSpace(reAllowed.ReplaceAllString(v.Message, ""))
+		if !slices.Contains(msgs, msg) {
+			msgs = append(msgs, msg)
+		}
 	}
-	return strings.Join(msgs, "; ")
+	out := strings.Join(msgs, "; ")
+	if allowed != "" {
+		out += " (allowed: " + allowed + ")"
+	}
+	return out
 }
 
 // suggestFix derives the smallest mandate change from the first violation,
@@ -355,22 +369,22 @@ func suggestFix(decisionJSON string, choices []choice) (field string, value any,
 			if cheapest <= 0 {
 				cheapest = d.Total
 			}
-			return "total_budget", cheapest, fmt.Sprintf("the cheapest cart that meets the goal costs %.2f; %s", cheapest, v.Message)
+			return "total_budget", cheapest, fmt.Sprintf("the cheapest cart that meets the goal costs %.2f, more than the budget left", cheapest)
 		case "item_over_cap":
 			if p != nil {
-				return "max_per_item", p.Price, fmt.Sprintf("the cheapest matching item costs %.2f; %s", p.Price, v.Message)
+				return "max_per_item", p.Price, fmt.Sprintf("the cheapest matching item costs %.2f, above the per-item cap", p.Price)
 			}
 		case "category_not_allowed":
 			if p != nil && p.Category != "" {
-				return "allowed_categories", []string{p.Category}, fmt.Sprintf("the goal needs a %s item; %s", p.Category, v.Message)
+				return "allowed_categories", []string{p.Category}, fmt.Sprintf("the goal needs a %s item%s", p.Category, allowedNote(v.Message))
 			}
 		case "merchant_blocked":
 			if p != nil {
-				return "blocked_merchants", []string{p.Merchant}, fmt.Sprintf("the best match is only sold by %s; %s", p.Merchant, v.Message)
+				return "blocked_merchants", []string{p.Merchant}, fmt.Sprintf("the best match is only sold by %s, which this mandate blocks", p.Merchant)
 			}
 		case "rating_too_low":
 			if p != nil {
-				return "min_rating", p.Rating, fmt.Sprintf("the best match is rated %.1f; %s", p.Rating, v.Message)
+				return "min_rating", p.Rating, fmt.Sprintf("the best match is rated %.1f, below the mandate's minimum", p.Rating)
 			}
 		}
 	}
@@ -458,4 +472,36 @@ func (n *fakeNegotiator) Send(ctx context.Context, userText string, tools []Tool
 	n.lastPrice = counter
 	call("counter_offer", map[string]any{"price": counter, "message": "My rate reflects the time and gear involved, but I can come down to this."})
 	return "", nil
+}
+
+var reAllowed = regexp.MustCompile(`\(allowed: ([^)]*)\)`)
+
+// allowedNote turns a category violation's "(allowed: a, b)" into a short
+// clause, so the suggestion does not repeat the whole violation sentence.
+func allowedNote(violation string) string {
+	if m := reAllowed.FindStringSubmatch(violation); m != nil && m[1] != "" {
+		return " and this mandate allows only " + m[1]
+	}
+	return ""
+}
+
+// changeHint says in words what a suggested mandate change would do.
+func changeHint(field string, value any) string {
+	switch field {
+	case "allowed_categories":
+		if v, ok := value.([]string); ok && len(v) > 0 {
+			return "allow the " + strings.Join(v, ", ") + " category"
+		}
+	case "blocked_merchants":
+		if v, ok := value.([]string); ok && len(v) > 0 {
+			return "unblock " + strings.Join(v, ", ")
+		}
+	case "max_per_item":
+		return fmt.Sprintf("raise the per-item cap to %.2f", value)
+	case "total_budget":
+		return fmt.Sprintf("raise the budget to %.2f", value)
+	case "min_rating":
+		return fmt.Sprintf("lower the minimum rating to %.1f", value)
+	}
+	return "amend the mandate"
 }

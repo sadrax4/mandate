@@ -31,13 +31,14 @@ async function buyer() {
   return { email: m[1], pass: m[2] }
 }
 
+const MANDATE = process.env.MANDATE_NAME || 'Home office'
 const goalBox = (page) => page.locator('#goal-input')
 const startBtn = (page) => page.getByRole('button', { name: 'Start mission' })
 
 async function useMandate(page, name) {
   const sel = page.locator('select[aria-label="Mandate for the next mission"]')
   await sel.waitFor({ timeout: 15000 })
-  const value = await sel.evaluate((s, n) => [...s.options].find((o) => o.text.startsWith(n))?.value, name)
+  const value = await sel.evaluate((s, n) => [...s.options].find((o) => o.text.startsWith(n + ' \u00b7'))?.value, name)
   if (!value) throw new Error('no mandate named ' + name)
   const c = await L.center(page, sel)
   await L.glide(page, c.x, c.y, 600)
@@ -102,7 +103,7 @@ const SCENES = {
     await click(page, page.getByRole('link', { name: 'New mandate' }).first())
     await page.waitForSelector('text=Total budget')
     const field = (label) => page.locator('label.field', { hasText: label }).locator('input')
-    await type(page, page.locator('input[placeholder="e.g. Home office refresh"]'), 'Home office')
+    await type(page, page.locator('input[placeholder="e.g. Home office refresh"]'), MANDATE)
     for (const [label, val] of [['Total budget', '300'], ['Max per item', '150'], ['Auto-approve carts under', '40']]) {
       const f = field(label)
       await click(page, f, { after: 100 })
@@ -113,7 +114,7 @@ const SCENES = {
     rec.cap('Under $40 it can pay by itself, with the PayPal\naccount I save at the first checkout.')
     await sleep(2600)
     await click(page, page.getByRole('button', { name: 'Create mandate' }))
-    await page.waitForSelector('.mandate-card .name:has-text("Home office")')
+    await page.waitForSelector(`.mandate-card .name:has-text("${MANDATE}")`)
     await sleep(1800)
   },
 
@@ -123,7 +124,7 @@ const SCENES = {
     await page.waitForSelector('#goal-input')
     await sleep(500)
     rec.cap('I give the agent a goal in plain language.')
-    await useMandate(page, 'Home office')
+    await useMandate(page, MANDATE)
     await type(page, goalBox(page), GOALS.buy)
     await click(page, startBtn(page))
     await page.waitForURL(/#\/missions\//)
@@ -154,7 +155,7 @@ const SCENES = {
   async autopay(page, rec) {
     await page.goto(BASE + '/#/')
     await page.waitForSelector('#goal-input')
-    await useMandate(page, 'Home office')
+    await useMandate(page, MANDATE)
     rec.cap('Next goal. This one costs less than my $40 limit.')
     await type(page, goalBox(page), GOALS.auto)
     await click(page, startBtn(page))
@@ -172,7 +173,7 @@ const SCENES = {
   async reject(page, rec) {
     await page.goto(BASE + '/#/')
     await page.waitForSelector('#goal-input')
-    await useMandate(page, 'Home office')
+    await useMandate(page, MANDATE)
     rec.cap('Above my auto-pay limit, the agent has to ask.')
     await type(page, goalBox(page), GOALS.reject)
     await click(page, startBtn(page))
@@ -200,7 +201,7 @@ const SCENES = {
   async negotiate(page, rec) {
     await page.goto(BASE + '/#/')
     await page.waitForSelector('#goal-input')
-    await useMandate(page, 'Home office')
+    await useMandate(page, MANDATE)
     rec.cap('Services work too: two agents negotiate the price.')
     const kind = page.locator('select[aria-label="Mission kind"]')
     const c = await L.center(page, kind)
@@ -230,11 +231,13 @@ const SCENES = {
     if (await ask.count()) {
       await L.scrollBy(page, 360, 900)
       rec.cap('An assistant reads PayPal itself through PayPal\'s\nMCP server. It can look, never pay.')
-      await type(page, ask, 'Did my most recent order get captured? Confirm it with PayPal.', { delay: 30 })
+      await type(page, ask, process.env.ASK || 'Did my most recent order get captured? Confirm it with PayPal.', { delay: 30 })
       await click(page, page.getByRole('button', { name: 'Ask', exact: true }))
       await rec.lapse('Asking PayPal (sped up).', 4, async () => {
         await page.waitForSelector('.chips .chip:has-text("PayPal MCP")', { timeout: 120000 })
       })
+      const said = await page.locator('.summary.md').last().innerText().catch(() => '')
+      if (LIVE && /couldn.t|could not|unable|failed|error|unsupported/i.test(said)) throw new Error('the assistant could not get an answer from PayPal MCP: ' + said.slice(0, 160) + '  (try another question with ASK=...)')
       await L.scrollBy(page, 260, 800)
       await sleep(3800)
     }
@@ -255,7 +258,16 @@ async function runScene(name) {
   const fn = SCENES[name]
   if (!fn) throw new Error('unknown scene ' + name + '; have ' + Object.keys(SCENES).join(', '))
   const dark = name === 'insights' && process.env.DARK === '1'
-  const { browser, page } = await L.launch({ proxy: PROXY, dark })
+  const { browser, ctx, page } = await L.launch({ proxy: PROXY, dark })
+  if (LIVE) {
+    // the live app prints the sandbox buyer's password as a hint for testers; never show it in the video
+    const pw = await buyer().then((b) => b.pass).catch(() => '')
+    if (pw) await ctx.addInitScript((secret) => {
+      const mask = (root) => { const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) if (n.nodeValue.includes(secret)) n.nodeValue = n.nodeValue.split(secret).join('\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022') }
+      const go = () => { mask(document.documentElement); new MutationObserver(() => mask(document.documentElement)).observe(document.documentElement, { childList: true, subtree: true, characterData: true }) }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go()
+    }, pw)
+  }
   const rec = new L.Recorder(page, `${OUT}/${name}`)
   try {
     await page.goto(BASE + '/#/')

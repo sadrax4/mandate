@@ -1018,7 +1018,7 @@ function DecisionCard(p: {
         {stale && <div className="alert warn" style={{ marginTop: 0 }}>The budget moved since the agent proposed this cart: it no longer fits the mandate, so PayPal would refuse it. Ask the agent for a cheaper cart, or reject it.</div>}
         {vaultFailed && <div className="alert warn" style={{ marginTop: 0 }}>Your saved PayPal account could not be charged, so this cart needs one checkout. The checkout saves a new account for next time.</div>}
         <Grid<CartItem> rowData={latest.cart.items} columnDefs={p.itemCols} getRowId={(r) => r.data.product_id} compact />
-        <ChecksLine latest={latest} decision={decision} vaultFailed={!!vaultFailed} />
+        <ChecksLine latest={latest} decision={decision} vaultFailed={!!vaultFailed} viaCheckout={!!payment && !payment.vaulted} />
         {latest.summary && !repeatSummary && (
           <div className="summary md">
             <div className="summary-label">Why this cart</div>
@@ -1164,8 +1164,8 @@ function DecisionCard(p: {
   )
 }
 
-const MODE: Record<string, (requires: boolean) => string> = {
-  paid: (r) => (r ? 'approved by you' : 'paid automatically: under your auto-pay limit'),
+const MODE: Record<string, (requires: boolean, viaCheckout?: boolean) => string> = {
+  paid: (r, checkout) => (r ? 'approved by you' : checkout ? 'auto-approved · you finished at PayPal' : 'paid automatically: under your auto-pay limit'),
   refunded: () => 'refunded',
   approved: (r) => (r ? 'approved by you · finish at PayPal' : 'auto-approved · finish at PayPal'),
   rejected: () => 'sent back by you',
@@ -1173,7 +1173,7 @@ const MODE: Record<string, (requires: boolean) => string> = {
   cancelled: () => 'cancelled',
 }
 
-function ChecksLine({ latest, decision, vaultFailed }: { latest: Proposal; decision: Decision; vaultFailed: boolean }) {
+function ChecksLine({ latest, decision, vaultFailed, viaCheckout }: { latest: Proposal; decision: Decision; vaultFailed: boolean; viaCheckout: boolean }) {
   const passed = decision.checks_passed ?? []
   const violations = decision.violations ?? []
   const total = passed.length + violations.length
@@ -1181,7 +1181,7 @@ function ChecksLine({ latest, decision, vaultFailed }: { latest: Proposal; decis
   const waiting = !MODE[latest.status]
   const mode = vaultFailed ? 'auto-approved · checkout needed'
     : waiting && violations.length > 0 ? 'cannot be approved as it is'
-    : (MODE[latest.status]?.(requires) ?? (requires ? 'needs your approval' : 'under your auto-pay limit'))
+    : (MODE[latest.status]?.(requires, viaCheckout) ?? (requires ? 'needs your approval' : 'under your auto-pay limit'))
   return (
     <div className="checks">
       <div>

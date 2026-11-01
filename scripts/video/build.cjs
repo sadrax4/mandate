@@ -80,6 +80,7 @@ function buildScene(dir, out) {
   fs.writeFileSync(assFile, ass(caps, meta.badge))
   const vf = `fps=${FPS},scale=${W}:${H}:flags=lanczos,subtitles=${assFile.replace(/\\/g, '/').replace(/:/g, '\\:')},format=yuv420p`
   ff(['-f', 'concat', '-safe', '0', '-i', path.join(dir, 'list.txt'), '-vf', vf, '-r', String(FPS), '-c:v', 'libx264', '-preset', process.env.X264_PRESET || 'veryfast', '-crf', '21', '-an', out])
+  if (process.env.PRUNE === '1') for (const f of fs.readdirSync(dir)) if (f.endsWith('.jpg')) fs.rmSync(path.join(dir, f))
   return { file: out, dur: end, caps }
 }
 

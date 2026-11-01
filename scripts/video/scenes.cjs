@@ -14,6 +14,23 @@ const PROXY = process.env.PROXY ? { server: process.env.PROXY } : undefined
 const BADGE = LIVE ? '' : 'OFFLINE DEMO MODE'
 const WAIT = LIVE ? 150000 : 60000
 
+const GOALS = {
+  buy: process.env.GOAL_BUY || 'a mechanical keyboard with brown switches under $120',
+  auto: process.env.GOAL_AUTO || 'a USB-C hub with HDMI under $35',
+  reject: process.env.GOAL_REJECT || 'noise cancelling headphones under $150',
+  negotiate: process.env.GOAL_NEGOTIATE || 'a two-hour product photo shoot for 20 items',
+}
+const approveBtn = (page) => page.getByRole('button', { name: /Approve & pay/ }).first()
+
+/** The sandbox buyer: PP_EMAIL / PP_PASS, or the public "email / password" hint the live app shows testers. */
+async function buyer() {
+  if (process.env.PP_EMAIL && process.env.PP_PASS) return { email: process.env.PP_EMAIL, pass: process.env.PP_PASS }
+  const cfg = await (await fetch(BASE + '/api/config')).json()
+  const m = /^\s*(\S+@\S+)\s*[\/|]\s*(.+?)\s*$/.exec(cfg.demo_buyer_hint || '')
+  if (!m) throw new Error('no sandbox buyer: set PP_EMAIL and PP_PASS, or DEMO_BUYER_HINT="email / password" on the server')
+  return { email: m[1], pass: m[2] }
+}
+
 const goalBox = (page) => page.locator('#goal-input')
 const startBtn = (page) => page.getByRole('button', { name: 'Start mission' })
 
@@ -37,8 +54,7 @@ async function payAtPayPal(page, rec) {
     await click(page, page.getByRole('button', { name: 'Approve and pay' }))
     return
   }
-  const email = process.env.PP_EMAIL, pass = process.env.PP_PASS
-  if (!email || !pass) throw new Error('set PP_EMAIL and PP_PASS (the sandbox buyer from the README)')
+  const { email, pass } = await buyer()
   await rec.lapse('Mandate sends me to PayPal\'s own sandbox checkout.\nNo real money moves.', 3.5, async () => {
     await page.waitForURL(/paypal\.com/, { timeout: 60000 })
     await page.locator('input#email, input[name="login_email"], input[type="email"]').first().waitFor({ timeout: 60000 })
@@ -108,11 +124,11 @@ const SCENES = {
     await sleep(500)
     rec.cap('I give the agent a goal in plain language.')
     await useMandate(page, 'Home office')
-    await type(page, goalBox(page), 'a mechanical keyboard with brown switches under $120')
+    await type(page, goalBox(page), GOALS.buy)
     await click(page, startBtn(page))
     await page.waitForURL(/#\/missions\//)
     await rec.lapse('Claude searches the catalog, compares products and checks\nevery cart against the mandate (sped up).', 5, async () => {
-      await page.waitForSelector('text=The agent proposes', { timeout: WAIT })
+      await approveBtn(page).waitFor({ timeout: WAIT })
     })
     await sleep(800)
     rec.cap('The agent can propose. It cannot pay.\nThe cart passed every rule in the mandate.')
@@ -140,11 +156,11 @@ const SCENES = {
     await page.waitForSelector('#goal-input')
     await useMandate(page, 'Home office')
     rec.cap('Next goal. This one costs less than my $40 limit.')
-    await type(page, goalBox(page), 'a USB-C hub with HDMI under $35')
+    await type(page, goalBox(page), GOALS.auto)
     await click(page, startBtn(page))
     await page.waitForURL(/#\/missions\//)
     await rec.lapse('Claude researches. The mandate checks the cart\nand the saved PayPal account pays it (sped up).', 5, async () => {
-      await page.waitForSelector('text=/Paid through PayPal|The agent proposes/', { timeout: WAIT })
+      await page.locator('text=Paid through PayPal').or(approveBtn(page)).first().waitFor({ timeout: WAIT })
       await sleep(1500)
     })
     const paid = await page.locator('text=Paid through PayPal').count()
@@ -158,11 +174,11 @@ const SCENES = {
     await page.waitForSelector('#goal-input')
     await useMandate(page, 'Home office')
     rec.cap('Above my auto-pay limit, the agent has to ask.')
-    await type(page, goalBox(page), 'noise cancelling headphones under $150')
+    await type(page, goalBox(page), GOALS.reject)
     await click(page, startBtn(page))
     await page.waitForURL(/#\/missions\//)
     await rec.lapse('Claude researches and proposes (sped up).', 4, async () => {
-      await page.waitForSelector('text=The agent proposes', { timeout: WAIT })
+      await approveBtn(page).waitFor({ timeout: WAIT })
     })
     await sleep(1800)
     rec.cap('Too expensive? I send it back, with a reason.')
@@ -171,7 +187,9 @@ const SCENES = {
     await sleep(500)
     await click(page, page.getByRole('button', { name: 'Send back to the agent' }))
     await rec.lapse('The agent revises in the same conversation (sped up).', 4, async () => {
-      await page.waitForSelector('text=/after your feedback|Paid through PayPal/', { timeout: WAIT })
+      await page.locator('#reject-reason').waitFor({ state: 'detached', timeout: 20000 }).catch(() => {})
+      await sleep(1500)
+      await page.locator('text=Paid through PayPal').or(approveBtn(page)).first().waitFor({ timeout: WAIT })
       await sleep(1500)
     })
     rec.cap('A new cart that respects what I said.')
@@ -189,11 +207,11 @@ const SCENES = {
     await L.glide(page, c.x, c.y, 600)
     await kind.selectOption('negotiate')
     await sleep(400)
-    await type(page, goalBox(page), 'a two-hour product photo shoot for 20 items')
+    await type(page, goalBox(page), GOALS.negotiate)
     await click(page, startBtn(page))
     await page.waitForURL(/#\/missions\//)
     await rec.lapse('My buyer agent haggles with a seller agent.\nIt can never go above the limit I set (sped up).', 6, async () => {
-      await page.waitForSelector('text=below asking', { timeout: WAIT })
+      await approveBtn(page).waitFor({ timeout: WAIT })
     })
     await sleep(800)
     rec.cap('The agreed price becomes an ordinary proposal.\nNeither agent can pay. I decide.')
@@ -215,7 +233,7 @@ const SCENES = {
       await type(page, ask, 'Did my most recent order get captured? Confirm it with PayPal.', { delay: 30 })
       await click(page, page.getByRole('button', { name: 'Ask', exact: true }))
       await rec.lapse('Asking PayPal (sped up).', 4, async () => {
-        await page.waitForSelector('.chip:has-text("PayPal MCP")', { timeout: 90000 })
+        await page.waitForSelector('.chips .chip:has-text("PayPal MCP")', { timeout: 120000 })
       })
       await L.scrollBy(page, 260, 800)
       await sleep(3800)

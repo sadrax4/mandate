@@ -664,8 +664,10 @@ func (s *Server) handleGetMission(w http.ResponseWriter, r *http.Request) {
 	proposals := s.st.ListProposals(m.ID)
 	live := map[string]mandate.Decision{}
 	if md != nil {
+		busy := s.inflightIDs()
 		for _, p := range proposals {
-			if p.Status == store.ProposalPending {
+			// A cart being approved right now already holds its own reservation: re-checking it would count it twice.
+			if p.Status == store.ProposalPending && !busy[p.ID] {
 				live[p.ID] = md.Evaluate(p.Cart)
 			}
 		}
@@ -2015,6 +2017,7 @@ func (s *Server) missionRows(mandateID string) []missionRow {
 	ms := s.st.ListMissions(mandateID)
 	out := make([]missionRow, 0, len(ms))
 	mandates := map[string]*mandate.Mandate{}
+	busy := s.inflightIDs()
 	for _, m := range ms {
 		row := missionRow{Mission: m}
 		if m.ProposalID != "" {
@@ -2023,7 +2026,7 @@ func (s *Server) missionRows(mandateID string) []missionRow {
 				row.ProposalCurrency = p.Decision.Currency
 				row.ProposalItems = len(p.Cart.Items)
 				row.ProposalFirst = p.Cart.Items[0].Title
-				if p.Status == store.ProposalPending {
+				if p.Status == store.ProposalPending && !busy[p.ID] {
 					md, ok := mandates[p.MandateID]
 					if !ok {
 						md, _ = s.st.GetMandate(p.MandateID)
@@ -2042,6 +2045,17 @@ func (s *Server) missionRows(mandateID string) []missionRow {
 			}
 		}
 		out = append(out, row)
+	}
+	return out
+}
+
+// inflightIDs is the set of proposals whose PayPal order is being created.
+func (s *Server) inflightIDs() map[string]bool {
+	s.payMu.Lock()
+	defer s.payMu.Unlock()
+	out := make(map[string]bool, len(s.inflight))
+	for id := range s.inflight {
+		out[id] = true
 	}
 	return out
 }

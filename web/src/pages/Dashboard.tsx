@@ -19,6 +19,11 @@ const REPEAT_OPTIONS = [
   { days: 90, label: 'Repeat quarterly' },
 ]
 
+// A capture PayPal is still settling is PayPal's turn, not yours.
+const capturedAtPayPal = (s?: string) => s === 'PENDING' || s === 'COMPLETED' || s === 'PARTIALLY_REFUNDED'
+/** Missions waiting on the human: a cart to approve, or a checkout to finish. One rule for the band and the cards. */
+const needsYou = (ms: Mission) => ms.status === 'awaiting_approval' || (ms.status === 'awaiting_payment' && !capturedAtPayPal(ms.payment_status))
+
 const VISIBLE_MANDATES = 6
 const VISIBLE_APPROVALS = 5
 const VISIBLE_MISSIONS = 8
@@ -135,10 +140,8 @@ export default function Dashboard() {
   }, [mandates.length, missions])
 
   // Your turn: carts to approve, and approved carts whose PayPal checkout is unfinished (first: they hold budget).
-  // A capture PayPal is still settling is PayPal's turn, not yours.
-  const capturedAtPayPal = (s?: string) => s === 'PENDING' || s === 'COMPLETED' || s === 'PARTIALLY_REFUNDED'
   const awaiting = missions
-    .filter((ms) => ms.status === 'awaiting_approval' || (ms.status === 'awaiting_payment' && !capturedAtPayPal(ms.payment_status)))
+    .filter(needsYou)
     .sort((a, b) => (a.status === b.status ? 0 : a.status === 'awaiting_payment' ? -1 : 1))
   const paying = awaiting.some((ms) => ms.status === 'awaiting_payment')
   const standing = missions.filter((ms) => (ms.repeat_days ?? 0) > 0)
@@ -353,7 +356,7 @@ function GoalBar({ mandates, selectedId, onSelect, demoExists, busy, onDemo, onS
           className="goal-input"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder={kind === 'negotiate' ? 'e.g. logo design, three concepts' : 'e.g. a 27-inch 4K USB-C monitor under $300'}
+          placeholder={kind === 'negotiate' ? 'e.g. logo design, three concepts' : 'e.g. a 4K USB-C monitor under $300'}
           aria-label="Goal for the agent"
         />
         <button className="btn primary goal-go" disabled={starting || !goal.trim()}>{starting ? 'Starting…' : 'Start mission'}</button>
@@ -412,8 +415,8 @@ function HowItWorks() {
 
 function MandateCard({ mandate: m, missions, selected, onSelect, onChanged }: { mandate: Mandate; missions: Mission[]; selected: boolean; onSelect: () => void; onChanged: () => void }) {
   const [open, setOpen] = useState(false)
-  const waiting = missions.filter((x) => x.status === 'awaiting_approval' || x.status === 'awaiting_payment').length
-  const working = missions.filter((x) => x.status === 'running').length
+  const waiting = missions.filter(needsYou).length
+  const working = missions.filter((x) => x.status === 'running' || (x.status === 'awaiting_payment' && !needsYou(x))).length
   const remaining = remainingOf(m)
   const mini = [...missions].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 5)
   return (

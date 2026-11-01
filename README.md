@@ -15,9 +15,9 @@ Built for the [PayPal AI Hackathon](https://paypalaihackathon.devpost.com/) (Oct
 **Live demo: http://23.27.20.150:8080** (PayPal sandbox, Claude Opus 5.5, live Channel3 catalog; no real money moves).
 To test a payment, log in at PayPal checkout with the sandbox buyer account `sb-f6dqu53622575@personal.example.com` / password `Udb;8n)b`.
 
-![Live sandbox run: real Channel3 product, Claude reasoning, PayPal order captured](docs/screenshots/live-mission-paid.png)
+![A paid mission: the cart the agent proposed inside the mandate, the PayPal receipt, and how the agent got there](docs/screenshots/mission-paid.png)
 
-*A real run on the live demo: the agent searched Channel3, picked a Keychron keyboard from bestbuy.com, explained what it rejected and why, and the PayPal sandbox order was captured after human approval.*
+*The mission page after a human approved the agent's cart: what was bought and why, the PayPal receipt, the story of how the agent got there, and every product it compared. Taken in offline demo mode; the live demo runs the same flow on the PayPal sandbox with Claude and the live Channel3 catalog ([a live run](docs/screenshots/live-mission-paid.png), earlier design).*
 
 ![Seventeen seconds of the offline demo: goal typed, agent proposes, human approves, simulated PayPal checkout, captured, insights](docs/demo.gif)
 
@@ -59,12 +59,12 @@ Two independent gates protect the money: the policy engine (re-run at approval t
 |---|---|
 | ![Dashboard](docs/screenshots/dashboard.png) Dashboard: one goal bar, what needs approval, mandates with budget bars, standing orders, recent missions | ![Paid](docs/screenshots/mission-paid.png) Captured payment with PayPal order and capture IDs |
 | ![Rejected and revised](docs/screenshots/mission-rejected-and-revised.png) Rejected with feedback, revised by the agent | ![Ledger](docs/screenshots/ledger.png) Ledger across all mandates (AG Grid) |
-| ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after payment |
+| ![PayPal sandbox checkout](docs/screenshots/live-paypal-checkout.png) The real PayPal sandbox checkout the buyer lands on (live sandbox) | ![Receipt](docs/screenshots/live-payment-receipt.png) Capture ID, payer and the agent's reasoning after a live sandbox payment (earlier design) |
 | ![Spending insights](docs/screenshots/insights.png) Spending insights: AG Charts over the ledger, AG Grid of every item bought | ![Suggestion](docs/screenshots/suggestion.png) A goal outside the mandate: the agent explains, suggests the smallest change, the human amends and retries |
 | ![One-click payment](docs/screenshots/one-click-paid.png) Second purchase on a mandate with a saved PayPal account: approved and captured with one click, no checkout | ![Standing orders](docs/screenshots/standing-orders.png) Standing orders on the dashboard: the goal re-runs on schedule, inside the mandate, with Run now and Stop |
 | ![Agent-to-agent negotiation](docs/screenshots/negotiation.png) Agent-to-agent: the buyer agent negotiates a service under the mandate's limit, the seller agent concedes, the human approves | |
 
-Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)). The first four screenshots were taken in offline demo mode (note the `mock` badges); the last two on the live sandbox deployment.
+Dark mode is supported throughout ([screenshot](docs/screenshots/dashboard-dark.png)), and every page works on a phone. Most screenshots were taken in offline demo mode (note the "Simulated" status at the top right); the PayPal checkout and the receipt come from the live sandbox deployment.
 
 ## Judging in two minutes
 

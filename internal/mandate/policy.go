@@ -253,7 +253,7 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 			d.Violations = append(d.Violations, Violation{Code: "currency_mismatch", Message: fmt.Sprintf("%q is priced in %s, mandate is %s", it.Title, it.Currency, m.Currency), ProductID: it.ProductID})
 		}
 		if m.MaxPerItem > 0 && it.UnitPrice > m.MaxPerItem+1e-9 {
-			d.Violations = append(d.Violations, Violation{Code: "item_over_cap", Message: fmt.Sprintf("%q costs %.2f, above the per-item cap of %.2f", it.Title, it.UnitPrice, m.MaxPerItem), ProductID: it.ProductID})
+			d.Violations = append(d.Violations, Violation{Code: "item_over_cap", Message: fmt.Sprintf("%q costs %s, above the per-item cap of %s", it.Title, amount(it.UnitPrice, m.Currency), amount(m.MaxPerItem, m.Currency)), ProductID: it.ProductID})
 		}
 		if len(allowed) > 0 && !allowed[strings.ToLower(it.Category)] {
 			d.Violations = append(d.Violations, Violation{Code: "category_not_allowed", Message: fmt.Sprintf("%q is in category %q which this mandate does not allow (allowed: %s)", it.Title, it.Category, strings.Join(m.AllowedCategories, ", ")), ProductID: it.ProductID})
@@ -268,7 +268,7 @@ func (m Mandate) Evaluate(cart Cart) Decision {
 	d.Total = cart.Total()
 	d.RemainingAfter = Round(d.RemainingBudget - d.Total)
 	if d.Total > d.RemainingBudget+1e-9 {
-		d.Violations = append(d.Violations, Violation{Code: "over_budget", Message: fmt.Sprintf("cart total %.2f exceeds the remaining budget of %.2f", d.Total, d.RemainingBudget)})
+		d.Violations = append(d.Violations, Violation{Code: "over_budget", Message: fmt.Sprintf("cart total %s exceeds the remaining budget of %s", amount(d.Total, m.Currency), amount(d.RemainingBudget, m.Currency))})
 	}
 	d.Allowed = len(d.Violations) == 0
 	if d.Allowed {
@@ -414,4 +414,17 @@ func MerchantBlocked(merchant string, blocked []string) bool {
 		}
 	}
 	return false
+}
+
+// amount writes money the way people read it in a violation: $109.00, £12.00, 12.00 CHF.
+func amount(v float64, cur string) string {
+	switch strings.ToUpper(cur) {
+	case "USD", "":
+		return fmt.Sprintf("$%.2f", v)
+	case "EUR":
+		return fmt.Sprintf("€%.2f", v)
+	case "GBP":
+		return fmt.Sprintf("£%.2f", v)
+	}
+	return fmt.Sprintf("%.2f %s", v, strings.ToUpper(cur))
 }

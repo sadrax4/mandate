@@ -31,10 +31,11 @@ export const relativeTime = (iso: string, now = Date.now()) => {
 /** One line of rules: ≤ $150/item · computers, office · rating ≥ 4 · never temu.com */
 export const describeRules = (m: Mandate) => {
   const parts: string[] = []
-  if (m.max_per_item > 0) parts.push(`≤ ${moneyShort(m.max_per_item, m.currency)}/item`)
+  // Non-breaking spaces inside each rule: a line may only break between rules.
+  if (m.max_per_item > 0) parts.push(`≤\u00a0${moneyShort(m.max_per_item, m.currency)}/item`)
   if (m.allowed_categories && m.allowed_categories.length > 0) parts.push(m.allowed_categories.join(', '))
-  if (m.min_rating > 0) parts.push(`rating ≥ ${m.min_rating}`)
-  if (m.blocked_merchants && m.blocked_merchants.length > 0) parts.push(`never ${m.blocked_merchants.join(', ')}`)
+  if (m.min_rating > 0) parts.push(`rating\u00a0≥\u00a0${m.min_rating}`)
+  if (m.blocked_merchants && m.blocked_merchants.length > 0) parts.push(`never\u00a0${m.blocked_merchants.join(', ')}`)
   return parts.length ? parts.join(' · ') : 'No restrictions beyond the budget'
 }
 

@@ -47,7 +47,8 @@ function ProductCell(p: { value?: string; data?: Candidate; compactLine?: boolea
   ) : (
     <span>{p.value}</span>
   )
-  if (!p.compactLine || !p.data) return <div className="clamp2 cell-wrap">{name}</div>
+  // Padding and clamp on separate boxes: overflow clips at the padding box, so one box would show a sliver of line three.
+  if (!p.compactLine || !p.data) return <div className="cell-wrap"><div className="clamp2">{name}</div></div>
   return (
     <div className="cart-item">
       <div className="cart-title">{name}</div>
@@ -988,6 +989,7 @@ function DecisionCard(p: {
             mock={p.mock}
             hint={p.demoBuyerHint}
             sticky={!p.rejecting}
+            phone={phone}
             withdraw={canDecide && !p.rejecting ? () => p.onRejecting(true) : undefined}
           />
         )}
@@ -1176,7 +1178,10 @@ function ChecksLine({ latest, decision, vaultFailed }: { latest: Proposal; decis
   const violations = decision.violations ?? []
   const total = passed.length + violations.length
   const requires = decision.requires_approval
-  const mode = vaultFailed ? 'auto-approved · checkout needed' : (MODE[latest.status]?.(requires) ?? (requires ? 'needs your approval' : 'under your auto-pay limit'))
+  const waiting = !MODE[latest.status]
+  const mode = vaultFailed ? 'auto-approved · checkout needed'
+    : waiting && violations.length > 0 ? 'cannot be approved as it is'
+    : (MODE[latest.status]?.(requires) ?? (requires ? 'needs your approval' : 'under your auto-pay limit'))
   return (
     <div className="checks">
       <div>
@@ -1200,19 +1205,19 @@ function ChecksLine({ latest, decision, vaultFailed }: { latest: Proposal; decis
 }
 
 /** What to do about an open PayPal order: one primary action, the rest as quieter options. */
-function PayActions({ payment, busy, onSync, mock, hint, withdraw, sticky }: { payment: Payment; busy: string; onSync: () => void; mock: boolean; hint?: string; withdraw?: () => void; sticky?: boolean }) {
+function PayActions({ payment, busy, onSync, mock, hint, withdraw, sticky, phone }: { payment: Payment; busy: string; onSync: () => void; mock: boolean; hint?: string; withdraw?: () => void; sticky?: boolean; phone?: boolean }) {
   const showCheckout = !!payment.approve_url && !isCaptured(payment.status) && payment.status !== 'APPROVED'
-  const syncLabel = busy === 'sync' ? 'Checking…' : 'Check status with PayPal'
+  const syncLabel = busy === 'sync' ? 'Checking…' : phone ? 'Check status' : 'Check status with PayPal'
   return (
     <div className="pay-actions">
       <p className="muted order-line">PayPal order <span className="mono">{payment.id}</span></p>
       <div className={`action-row${sticky ? ' is-sticky' : ''}`}>
         {showCheckout ? (
-          <a className="btn paypal lg grow" href={payment.approve_url}>Continue to PayPal checkout</a>
+          <a className="btn paypal lg grow" href={payment.approve_url}>{phone ? 'Pay at PayPal' : 'Continue to PayPal checkout'}</a>
         ) : (
           <button className="btn primary lg grow" onClick={onSync} disabled={busy !== ''}>{syncLabel}</button>
         )}
-        {withdraw && <button className="btn danger lg" onClick={withdraw} disabled={busy !== ''}>Withdraw & send feedback</button>}
+        {withdraw && <button className="btn danger lg" onClick={withdraw} disabled={busy !== ''}>{phone ? 'Withdraw' : 'Withdraw & send feedback'}</button>}
       </div>
       <p className="muted hint-line">
         {showCheckout && (

@@ -39,11 +39,13 @@ async function payAtPayPal(page, rec) {
   }
   const email = process.env.PP_EMAIL, pass = process.env.PP_PASS
   if (!email || !pass) throw new Error('set PP_EMAIL and PP_PASS (the sandbox buyer from the README)')
-  await page.waitForURL(/paypal\.com/, { timeout: 60000 })
-  rec.cap('PayPal sandbox checkout, with a test buyer account.\nNo real money moves.')
+  await rec.lapse('Mandate sends me to PayPal\'s own sandbox checkout.\nNo real money moves.', 3.5, async () => {
+    await page.waitForURL(/paypal\.com/, { timeout: 60000 })
+    await page.locator('input#email, input[name="login_email"], input[type="email"]').first().waitFor({ timeout: 60000 })
+  })
   const emailBox = page.locator('input#email, input[name="login_email"], input[type="email"]').first()
-  await emailBox.waitFor({ timeout: 60000 })
-  await sleep(1200)
+  await sleep(600)
+  rec.cap('I log in as a PayPal sandbox test buyer.')
   await type(page, emailBox, email, { delay: 45 })
   const next = page.locator('#btnNext, button:has-text("Next")').first()
   if (await next.isVisible().catch(() => false)) await click(page, next)
@@ -52,8 +54,8 @@ async function payAtPayPal(page, rec) {
   await type(page, pw, pass, { delay: 60 })
   await click(page, page.locator('#btnLogin, button:has-text("Log In")').first())
   const pay = page.locator('#payment-submit-btn, button:has-text("Complete Purchase"), button:has-text("Pay Now"), button:has-text("Agree & Pay"), button:has-text("Continue")').first()
-  await pay.waitFor({ timeout: 60000 })
-  await sleep(2200)
+  await rec.lapse('Logged in. PayPal shows what I am paying for.', 3, async () => { await pay.waitFor({ timeout: 60000 }) })
+  await sleep(2000)
   await click(page, pay)
 }
 
@@ -123,7 +125,9 @@ const SCENES = {
     rec.cap('I approve. Mandate creates a PayPal order\nfor exactly this cart.')
     await click(page, page.getByRole('button', { name: /Approve & pay/ }))
     await payAtPayPal(page, rec)
-    await page.waitForSelector('text=Paid through PayPal', { timeout: 90000 })
+    await rec.lapse('Back in Mandate: the server captures the payment.', LIVE ? 3 : 1, async () => {
+      await page.waitForSelector('text=Paid through PayPal', { timeout: 90000 })
+    })
     rec.cap('Captured through PayPal. The receipt carries the\norder and capture IDs, and the budget updates.')
     await sleep(2200)
     await L.scrollBy(page, 330, 900)
